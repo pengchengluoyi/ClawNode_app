@@ -1,15 +1,10 @@
 package com.clawnode.agent.core
 
 /**
- * 全局运行配置。Gateway 地址等可在 MainActivity 中持久化后注入。
- * 这里用单一可变对象，避免到处传参；真实生产可换成 DataStore。
+ * 全局运行常量（重连/心跳等）。可配置项（URL、token）已迁移到 [ConfigManager]。
  */
 object NodeConfig {
-    /** 网关 WebSocket 地址 */
-    @Volatile
-    var gatewayUrl: String = "wss://gateway.example.com/node"
-
-    /** 节点标识，握手时可带上（示例用，可选） */
+    /** 节点标识，握手时带上 */
     @Volatile
     var nodeId: String = "claw-node-001"
 

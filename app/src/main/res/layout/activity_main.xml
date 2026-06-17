@@ -24,49 +24,104 @@
             android:text="具身智能节点 · Headless Agent Node"
             android:textSize="13sp" />
 
+        <!-- ============ 配置区 ============ -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="WebSocket URL"
+            android:textSize="14sp"
+            android:textStyle="bold" />
+
+        <EditText
+            android:id="@+id/etWsUrl"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:hint="ws://192.168.x.x:8080/node"
+            android:inputType="textUri"
+            android:maxLines="1" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="Auth Token"
+            android:textSize="14sp"
+            android:textStyle="bold" />
+
+        <EditText
+            android:id="@+id/etAuthToken"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:hint="节点鉴权密钥"
+            android:inputType="textPassword"
+            android:maxLines="1" />
+
+        <Button
+            android:id="@+id/btnSaveConfig"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="保存配置" />
+
+        <!-- ============ 权限就绪区 ============ -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="28dp"
+            android:text="权限就绪状态"
+            android:textSize="14sp"
+            android:textStyle="bold" />
+
         <TextView
             android:id="@+id/tvAccessibilityState"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="24dp"
+            android:layout_marginTop="8dp"
             android:textSize="15sp"
-            android:text="无障碍服务：未知" />
+            android:text="● 无障碍服务：检测中…" />
+
+        <TextView
+            android:id="@+id/tvCaptureState"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:textSize="15sp"
+            android:text="● 屏幕捕获：检测中…" />
 
         <Button
             android:id="@+id/btnAccessibility"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:text="开启无障碍服务（手 + 眼）" />
+            android:layout_marginTop="12dp"
+            android:text="开启无障碍服务" />
 
+        <!-- ============ 连接状态区 ============ -->
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="24dp"
-            android:text="Gateway 地址"
+            android:layout_marginTop="28dp"
+            android:text="网关连接状态"
             android:textSize="14sp"
             android:textStyle="bold" />
 
-        <EditText
-            android:id="@+id/etGateway"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
-            android:hint="wss://gateway.example.com/node"
-            android:inputType="textUri" />
-
-        <Button
-            android:id="@+id/btnSaveGateway"
+        <TextView
+            android:id="@+id/tvConnState"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
-            android:text="保存地址" />
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:text="● 未连接" />
 
+        <!-- ============ 工具区 ============ -->
         <Button
             android:id="@+id/btnNotification"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="24dp"
+            android:layout_marginTop="28dp"
             android:text="通知权限设置（推流前台通知）" />
 
         <Button
@@ -75,14 +130,6 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
             android:text="测试唤醒屏幕" />
-
-        <TextView
-            android:id="@+id/tvConnState"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="24dp"
-            android:textSize="14sp"
-            android:text="连接状态：服务启动后自动连接" />
 
     </LinearLayout>
 </ScrollView>

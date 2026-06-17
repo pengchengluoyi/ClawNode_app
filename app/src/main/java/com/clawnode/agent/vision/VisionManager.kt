@@ -1,25 +1,20 @@
 package com.clawnode.agent.vision
 
-import android.accessibilityservice.AccessibilityService
 import android.content.Context
 import android.content.Intent
-import android.graphics.Bitmap
-import android.hardware.HardwareBuffer
-import android.view.Display
+import com.clawnode.agent.action.ActionExecutorService
 import com.clawnode.agent.model.Command
 import com.clawnode.agent.model.NodeResponse
 import com.clawnode.agent.system.MediaProjectionRequestActivity
 import com.clawnode.agent.ws.WsManager
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import java.util.concurrent.Executors
+import kotlinx.coroutines.withContext
 
 /**
  * 视觉与屏幕捕获模块。统一两种采集模式的入口：
  *
- *  - 模式 A（单帧，常态）：[captureSingleShot] 优先用
- *    AccessibilityService.takeScreenshot()，轻量、无需录屏授权。
+ *  - 模式 A（单帧，常态）：[captureSingleShot] 调用 [ActionExecutorService]
+ *    暴露的挂起函数执行 takeScreenshot()，轻量、无需录屏授权。
  *  - 模式 B（连续推流，按需）：[startStream] 拉起 MediaProjection 授权
  *    并启动 [StreamForegroundService]；[stopStream] 彻底销毁推流资源。
  *
@@ -28,43 +23,34 @@ import java.util.concurrent.Executors
  */
 class VisionManager(
     private val context: Context,
-    private val accessibilityService: AccessibilityService,
-    private val scope: CoroutineScope,
+    private val accessibilityService: ActionExecutorService,
     private val ws: WsManager
 ) {
-    private val screenshotExecutor = Executors.newSingleThreadExecutor()
 
     // ---------------- 模式 A：单次截图 ----------------
 
-    fun captureSingleShot(cmd: Command) {
-        val quality = cmd.payload?.quality ?: DEFAULT_QUALITY
-        accessibilityService.takeScreenshot(
-            Display.DEFAULT_DISPLAY,
-            screenshotExecutor,
-            object : AccessibilityService.TakeScreenshotCallback {
-                override fun onSuccess(result: AccessibilityService.ScreenshotResult) {
-                    // 在协程里做编码，避免阻塞回调线程
-                    scope.launch(Dispatchers.Default) {
-                        val bitmap = result.toBitmap()
-                        if (bitmap == null) {
-                            ws.send(NodeResponse.actionResult(cmd.traceId, false, "decode screenshot failed"))
-                            return@launch
-                        }
-                        val base64 = ImageCodec.bitmapToJpegBase64(bitmap, quality)
-                        bitmap.recycle()
-                        ws.send(NodeResponse.screenshot(cmd.traceId, base64))
-                    }
-                }
+    /**
+     * 处理 GET_SCREENSHOT：经 service 挂起函数拿到位图，
+     * 在 [Dispatchers.IO] 上压缩为 JPEG→Base64，再以 SCREENSHOT_RESULT 回传。
+     */
+    suspend fun captureSingleShot(cmd: Command) {
+        val quality = (cmd.payload?.quality ?: DEFAULT_QUALITY).coerceIn(1, 100)
 
-                override fun onFailure(errorCode: Int) {
-                    ws.send(
-                        NodeResponse.actionResult(
-                            cmd.traceId, false, "takeScreenshot failed code=$errorCode"
-                        )
-                    )
-                }
+        val bitmapResult = accessibilityService.captureScreenshotBitmap()
+        val bitmap = bitmapResult.getOrElse { err ->
+            ws.send(NodeResponse.actionResult(cmd.traceId, false, err.message ?: "screenshot failed"))
+            return
+        }
+
+        // 编码是 CPU/IO 密集，切到 IO 池，避免占用默认计算调度器
+        val base64 = withContext(Dispatchers.IO) {
+            try {
+                ImageCodec.bitmapToJpegBase64(bitmap, quality)
+            } finally {
+                bitmap.recycle()
             }
-        )
+        }
+        ws.send(NodeResponse.screenshot(cmd.traceId, base64))
     }
 
     // ---------------- 模式 B：连续推流 ----------------
@@ -93,17 +79,6 @@ class VisionManager(
     fun stopStream(cmd: Command?) {
         StreamForegroundService.stop(context)
         cmd?.let { ws.send(NodeResponse.streamStatus(it.traceId, true, "stream stopped")) }
-    }
-
-    private fun AccessibilityService.ScreenshotResult.toBitmap(): Bitmap? {
-        val buffer: HardwareBuffer = hardwareBuffer
-        return try {
-            Bitmap.wrapHardwareBuffer(buffer, colorSpace)
-                // 转成软件位图以便 JPEG 压缩（硬件位图不能直接 compress 到部分通路）
-                ?.copy(Bitmap.Config.ARGB_8888, false)
-        } finally {
-            buffer.close()
-        }
     }
 
     companion object {
