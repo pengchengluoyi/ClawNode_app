@@ -25,7 +25,11 @@ data class Command(
         // GET_SCREENSHOT 的 JPEG 质量 0-100
         @SerializedName("quality") val quality: Int? = null,
         // START_STREAM 的目标帧率
-        @SerializedName("fps") val fps: Int? = null
+        @SerializedName("fps") val fps: Int? = null,
+        // KEY_EVENT 的按键：back / home（或 Android keycode）
+        @SerializedName("keyevent") val keyevent: String? = null,
+        // STOP_APP 的目标包名
+        @SerializedName("package") val packageName: String? = null
     )
 
     companion object ActionType {
@@ -35,5 +39,7 @@ data class Command(
         const val GET_SCREENSHOT = "GET_SCREENSHOT"
         const val START_STREAM = "START_STREAM"
         const val STOP_STREAM = "STOP_STREAM"
+        const val KEY_EVENT = "KEY_EVENT"
+        const val STOP_APP = "STOP_APP"
     }
 }

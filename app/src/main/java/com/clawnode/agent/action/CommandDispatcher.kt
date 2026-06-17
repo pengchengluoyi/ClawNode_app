@@ -18,7 +18,11 @@ class CommandDispatcher(
     private val gesture: GestureController,
     private val vision: VisionManager,
     private val ws: WsManager,
-    private val onWakeUp: () -> Unit
+    private val onWakeUp: () -> Unit,
+    // KEY_EVENT：返回是否成功（由 service 用 performGlobalAction 实现）
+    private val onKeyEvent: (String) -> Boolean,
+    // STOP_APP：返回是否成功（无 root 多为 no-op）
+    private val onStopApp: (String) -> Boolean
 ) {
 
     fun dispatch(cmd: Command) {
@@ -34,10 +38,28 @@ class CommandDispatcher(
             Command.GET_SCREENSHOT -> vision.captureSingleShot(cmd)
             Command.START_STREAM -> vision.startStream(cmd)
             Command.STOP_STREAM -> vision.stopStream(cmd)
+            Command.KEY_EVENT -> handleKeyEvent(cmd)
+            Command.STOP_APP -> handleStopApp(cmd)
             else -> ws.send(
                 NodeResponse.actionResult(cmd.traceId, false, "unknown action_type=${cmd.actionType}")
             )
         }
+    }
+
+    private fun handleKeyEvent(cmd: Command) {
+        val key = cmd.payload?.keyevent
+        if (key.isNullOrBlank()) {
+            ws.send(NodeResponse.actionResult(cmd.traceId, false, "KEY_EVENT requires keyevent"))
+            return
+        }
+        val ok = runCatching { onKeyEvent(key) }.getOrDefault(false)
+        ws.send(NodeResponse.actionResult(cmd.traceId, ok, if (ok) "key $key dispatched" else "key $key unsupported"))
+    }
+
+    private fun handleStopApp(cmd: Command) {
+        val pkg = cmd.payload?.packageName.orEmpty()
+        val ok = runCatching { onStopApp(pkg) }.getOrDefault(false)
+        ws.send(NodeResponse.actionResult(cmd.traceId, ok, if (ok) "stop_app $pkg" else "stop_app unsupported (no root)"))
     }
 
     private suspend fun handleTap(cmd: Command) {

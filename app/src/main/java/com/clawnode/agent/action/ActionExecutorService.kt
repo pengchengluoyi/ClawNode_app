@@ -64,7 +64,9 @@ class ActionExecutorService : AccessibilityService() {
             gesture = gestureController,
             vision = visionManager,
             ws = wsManager,
-            onWakeUp = ::launchWakeUp
+            onWakeUp = ::launchWakeUp,
+            onKeyEvent = ::performKeyEvent,
+            onStopApp = ::stopApp
         )
 
         // 把上行指令流接到分发器
@@ -84,6 +86,27 @@ class ActionExecutorService : AccessibilityService() {
         val intent = Intent(this, WakeUpActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
         startActivity(intent)
+    }
+
+    /** KEY_EVENT：用无障碍全局动作落地返回键/Home/最近任务。返回是否支持。 */
+    private fun performKeyEvent(key: String): Boolean {
+        val action = when (key.lowercase()) {
+            "back", "4" -> GLOBAL_ACTION_BACK
+            "home", "3" -> GLOBAL_ACTION_HOME
+            "recents", "recent", "187" -> GLOBAL_ACTION_RECENTS
+            "notifications" -> GLOBAL_ACTION_NOTIFICATIONS
+            else -> return false
+        }
+        return performGlobalAction(action)
+    }
+
+    /**
+     * STOP_APP：无障碍服务无 root、无法 force-stop 任意应用。
+     * 这里只做诚实降级——返回 false，让上层知道未生效（不假装成功）。
+     */
+    private fun stopApp(pkg: String): Boolean {
+        android.util.Log.w("ActionExecutor", "stop_app($pkg) unsupported: no root/force-stop permission")
+        return false
     }
 
     /** 收集设备元信息用于注册帧（型号 / 系统版本 / 分辨率）。 */
