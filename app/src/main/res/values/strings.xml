@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">ClawNode</string>
+    <string name="accessibility_label">ClawNode Agent</string>
+    <string name="accessibility_description">ClawNode 具身智能节点：用于按远端网关指令执行屏幕手势与截图采集。</string>
+
+    <string name="stream_channel_name">ClawNode 推流服务</string>
+    <string name="stream_notification_title">ClawNode 正在采集屏幕</string>
+    <string name="stream_notification_text">实时视频流回传中…</string>
+</resources>
