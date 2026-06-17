@@ -4,10 +4,11 @@ import com.clawnode.agent.core.ConnectionState
 import com.clawnode.agent.core.NodeConfig
 import com.clawnode.agent.core.NodeSettings
 import com.clawnode.agent.core.NodeStatusBus
-import com.clawnode.agent.model.AuthHandshake
 import com.clawnode.agent.model.Command
 import com.clawnode.agent.model.GatewayControl
+import com.clawnode.agent.model.HeartbeatFrame
 import com.clawnode.agent.model.NodeResponse
+import com.clawnode.agent.model.RegisterFrame
 import com.google.gson.Gson
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -67,11 +68,25 @@ class WsManager(
     @Volatile
     private var authHalted = false
 
-    /** 当前生效配置（URL + token）。由服务在配置变更时通过 [applySettings] 注入。 */
+    /** 当前生效配置（URL + token + sn）。由服务在配置变更时通过 [applySettings] 注入。 */
     @Volatile
     private var settings: NodeSettings = NodeSettings.EMPTY
 
+    /**
+     * 设备元信息（型号/系统/分辨率），由服务在装配时通过 [setDeviceMeta] 注入，
+     * 用于构造 register 帧。WsManager 自身不依赖 Android Context。
+     */
+    @Volatile
+    private var deviceMeta: DeviceMeta = DeviceMeta("unknown", "Android", "0x0")
+
+    fun setDeviceMeta(meta: DeviceMeta) {
+        deviceMeta = meta
+    }
+
+    data class DeviceMeta(val model: String, val osVersion: String, val resolution: String)
+
     private var connectJob: Job? = null
+    private var heartbeatJob: Job? = null
     private var reconnectAttempt = 0
 
     private val _state = MutableStateFlow<ConnectionState>(ConnectionState.Idle)
@@ -155,6 +170,7 @@ class WsManager(
     /** 主动停止，不再重连 */
     fun stop() {
         manualClosed = true
+        stopHeartbeat()
         connectJob?.cancel()
         connectJob = null
         webSocket?.close(NORMAL_CLOSURE, "client stop")
@@ -203,10 +219,12 @@ class WsManager(
     private suspend fun openOnce(): String {
         setState(ConnectionState.Connecting)
         val current = settings
-        // 鉴权双保险之一：token 走 HTTP Header（升级握手阶段即可被网关拦截）
+        // MiniOrangeServer 的 /ws 在握手阶段读取 query 参数 token 鉴权；
+        // 同时保留 Authorization Header 以兼容通用网关。
+        val url = buildUrlWithToken(current.wsUrl, current.authToken)
         val request = Request.Builder()
-            .url(current.wsUrl)
-            .addHeader("X-Node-Id", NodeConfig.nodeId)
+            .url(url)
+            .addHeader("X-Node-Id", current.nodeSn)
             .apply {
                 if (current.authToken.isNotBlank()) {
                     addHeader("Authorization", "Bearer ${current.authToken}")
@@ -222,14 +240,18 @@ class WsManager(
                 reconnectAttempt = 0
                 setState(ConnectionState.Connected)
                 log("connected to ${current.wsUrl}")
-                // 鉴权双保险之二：连接建立后立刻上送 AUTH 首帧
-                val handshake = AuthHandshake(
-                    data = AuthHandshake.Data(
-                        nodeId = NodeConfig.nodeId,
-                        authToken = current.authToken
+                // 上送注册帧：让本节点进入服务端设备列表并标记为直连节点
+                val register = RegisterFrame(
+                    data = RegisterFrame.Data(
+                        sn = current.nodeSn,
+                        model = deviceMeta.model,
+                        osVersion = deviceMeta.osVersion,
+                        resolution = deviceMeta.resolution
                     )
                 )
-                ws.send(gson.toJson(handshake))
+                ws.send(gson.toJson(register))
+                // 启动应用层心跳（服务端按 heartbeat action 判活）
+                startHeartbeat(current.nodeSn)
             }
 
             override fun onMessage(ws: WebSocket, text: String) {
@@ -247,6 +269,7 @@ class WsManager(
 
             override fun onClosed(ws: WebSocket, code: Int, reason: String) {
                 webSocket = null
+                stopHeartbeat()
                 // 鉴权失败导致的主动关闭：保留 AuthFailed 状态，不覆盖为 Disconnected
                 if (!authHalted) setState(ConnectionState.Disconnected("closed[$code] $reason"))
                 if (!done.isCompleted) done.complete("closed[$code] $reason")
@@ -254,6 +277,7 @@ class WsManager(
 
             override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
                 webSocket = null
+                stopHeartbeat()
                 if (!authHalted) setState(ConnectionState.Disconnected(t.message ?: "failure"))
                 log("ws failure: ${t.message}")
                 if (!done.isCompleted) done.complete("failure: ${t.message}")
@@ -282,7 +306,19 @@ class WsManager(
             }
         }
 
-        // 2) 动作指令：必须带非空 action_type
+        // 2) MiniOrangeServer 的服务端响应帧（带 action + code）：
+        //    register_clawnode 成功(code=200) → 进入已鉴权终态；其余 ack 忽略。
+        val ack = runCatching { gson.fromJson(text, ServerAck::class.java) }.getOrNull()
+        if (ack?.action != null) {
+            if (ack.action == "register_clawnode" && ack.code == 200) {
+                log("register_clawnode ok → authenticated")
+                setState(ConnectionState.Authenticated)
+            }
+            // 其它服务端 ack（heartbeat 回执、错误码等）无需作为指令处理
+            return
+        }
+
+        // 3) 动作指令：必须带非空 action_type
         val cmd = runCatching { gson.fromJson(text, Command::class.java) }.getOrNull()
         if (cmd == null || cmd.actionType.isBlank()) {
             log("drop malformed message: $text")
@@ -292,6 +328,35 @@ class WsManager(
         if (!_incomingCommands.tryEmit(cmd)) {
             log("command buffer full, dropped trace=${cmd.traceId}")
         }
+    }
+
+    /** 服务端响应帧的窥探模型（仅取路由所需字段） */
+    private data class ServerAck(val action: String? = null, val code: Int? = null)
+
+    // ---- 应用层心跳：服务端按 heartbeat action 判活（60s 超时） ----
+
+    private fun startHeartbeat(sn: String) {
+        stopHeartbeat()
+        heartbeatJob = scope.launch {
+            while (isActive) {
+                delay(NodeConfig.HEARTBEAT_INTERVAL_MS)
+                val ws = webSocket ?: break
+                val ok = ws.send(gson.toJson(HeartbeatFrame(data = HeartbeatFrame.Data(sn = sn))))
+                if (!ok) break
+            }
+        }
+    }
+
+    private fun stopHeartbeat() {
+        heartbeatJob?.cancel()
+        heartbeatJob = null
+    }
+
+    /** 把 token 拼到 URL 的 query（MiniOrangeServer /ws 在握手阶段读取 ?token=）。 */
+    private fun buildUrlWithToken(baseUrl: String, token: String): String {
+        if (token.isBlank() || baseUrl.contains("token=")) return baseUrl
+        val sep = if (baseUrl.contains("?")) "&" else "?"
+        return "$baseUrl${sep}token=$token"
     }
 
     private fun handleAuthOk() {

@@ -51,6 +51,7 @@ class ActionExecutorService : AccessibilityService() {
 
         gestureController = GestureController(this)
         wsManager = WsManager(scope)
+        wsManager.setDeviceMeta(buildDeviceMeta())
         // 暴露给推流前台服务用于回传帧
         StreamBridge.wsRef = wsManager
         visionManager = VisionManager(
@@ -83,6 +84,15 @@ class ActionExecutorService : AccessibilityService() {
         val intent = Intent(this, WakeUpActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
         startActivity(intent)
+    }
+
+    /** 收集设备元信息用于注册帧（型号 / 系统版本 / 分辨率）。 */
+    private fun buildDeviceMeta(): WsManager.DeviceMeta {
+        val model = "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}".trim()
+        val osVersion = "Android ${android.os.Build.VERSION.RELEASE}"
+        val dm = resources.displayMetrics
+        val resolution = "${dm.widthPixels}x${dm.heightPixels}"
+        return WsManager.DeviceMeta(model = model, osVersion = osVersion, resolution = resolution)
     }
 
     /**
