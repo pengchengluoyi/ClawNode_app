@@ -16,6 +16,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write   # 允许首次生成的 debug.keystore 提交回仓库
 
     steps:
       - name: Checkout
@@ -33,6 +35,32 @@ jobs:
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
+
+      - name: Ensure fixed debug keystore
+        id: keystore
+        run: |
+          if [ ! -f app/debug.keystore ]; then
+            echo "debug.keystore 不存在，生成固定凭证的 keystore（仅首次）"
+            keytool -genkeypair -v \
+              -keystore app/debug.keystore \
+              -storepass android -keypass android \
+              -alias androiddebugkey \
+              -keyalg RSA -keysize 2048 -validity 10950 \
+              -dname "CN=Android Debug,O=Android,C=US"
+            echo "generated=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "复用已提交的 app/debug.keystore"
+            echo "generated=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit generated keystore (first time only)
+        if: steps.keystore.outputs.generated == 'true' && github.event_name == 'push'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -f app/debug.keystore
+          git commit -m "ci: 提交固定 debug keystore 以统一签名"
+          git push
 
       - name: Build Debug APK
         run: ./gradlew assembleDebug --stacktrace

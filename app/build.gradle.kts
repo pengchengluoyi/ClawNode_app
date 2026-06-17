@@ -16,7 +16,23 @@ android {
         versionName = "1.1.0"
     }
 
+    signingConfigs {
+        // 固定的 debug 签名：keystore 文件随仓库分发（app/debug.keystore），
+        // 保证 CI 与本地、以及历次构建产物的签名一致，避免
+        // INSTALL_FAILED_UPDATE_INCOMPATIBLE（覆盖安装时签名不匹配）。
+        // 使用 Android 约定的标准 debug 凭证，非敏感信息。
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("debug")
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(

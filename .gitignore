@@ -27,6 +27,8 @@ render.experimental.xml
 # Keystore files
 *.jks
 *.keystore
+# 例外：固定的 debug keystore 需随仓库分发，保证签名一致（非敏感）
+!app/debug.keystore
 
 # Google Services (e.g. APIs or Firebase)
 google-services.json

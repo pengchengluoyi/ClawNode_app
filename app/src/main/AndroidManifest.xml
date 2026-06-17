@@ -17,7 +17,15 @@
         android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@style/Theme.ClawNode"
+        android:usesCleartextTraffic="true"
         tools:targetApi="34">
+        <!--
+          usesCleartextTraffic：允许 ws://(明文) 连接局域网测试网关。
+          Android 9+ 默认禁止明文，否则 OkHttp 直接 onFailure：
+            "CLEARTEXT communication ... not permitted by network security policy"
+          ⚠️ 生产前应收紧：移除此属性，改用 res/xml/network_security_config.xml
+             仅对内网调试网段放行明文，对外一律走 wss://。
+        -->
 
         <!-- 节点控制台入口（仅用于权限引导与连接配置） -->
         <activity
