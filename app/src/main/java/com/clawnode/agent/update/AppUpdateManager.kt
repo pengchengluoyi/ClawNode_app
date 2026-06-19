@@ -162,7 +162,7 @@ object AppUpdateManager {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             runCatching { installWithPackageInstaller(context, apkFile) }
                 .onFailure { e ->
-                    ClawLog.w(TAG, "install_session_fail", "fallback ACTION_VIEW", e)
+                    ClawLog.e(TAG, "install_session_fail", "fallback ACTION_VIEW", e)
                     installWithViewIntent(context, apkFile)
                 }
         } else {
