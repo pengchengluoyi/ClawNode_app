@@ -18,7 +18,8 @@ class CommandDispatcher(
     private val ws: WsManager,
     private val onWakeUp: () -> Unit,
     private val onKeyEvent: (String) -> Boolean,
-    private val onStopApp: (String) -> Boolean
+    private val onLaunchApp: (String, String?) -> Pair<Boolean, String>,
+    private val onCloseApp: (String) -> Pair<Boolean, String>
 ) {
 
     fun dispatch(cmd: Command) {
@@ -43,11 +44,36 @@ class CommandDispatcher(
             Command.START_STREAM -> vision.startStream(cmd)
             Command.STOP_STREAM -> vision.stopStream(cmd)
             Command.KEY_EVENT -> handleKeyEvent(cmd)
-            Command.STOP_APP -> handleStopApp(cmd)
+            Command.OPEN_APP, Command.START_APP -> handleOpenApp(cmd)
+            Command.CLOSE_APP, Command.STOP_APP -> handleCloseApp(cmd)
             else -> ws.sendChecked(
                 NodeResponse.actionResult(cmd.traceId, false, "unknown action_type=${cmd.actionType}")
             )
         }
+    }
+
+    private fun handleOpenApp(cmd: Command) {
+        val pkg = cmd.payload?.packageName
+        if (pkg.isNullOrBlank()) {
+            ws.sendChecked(NodeResponse.actionResult(cmd.traceId, false, "OPEN_APP requires package"))
+            return
+        }
+        val (ok, msg) = runCatching { onLaunchApp(pkg, cmd.payload?.activity) }.getOrElse {
+            false to (it.message ?: "launch error")
+        }
+        ws.sendChecked(NodeResponse.actionResult(cmd.traceId, ok, msg))
+    }
+
+    private fun handleCloseApp(cmd: Command) {
+        val pkg = cmd.payload?.packageName
+        if (pkg.isNullOrBlank()) {
+            ws.sendChecked(NodeResponse.actionResult(cmd.traceId, false, "CLOSE_APP requires package"))
+            return
+        }
+        val (ok, msg) = runCatching { onCloseApp(pkg) }.getOrElse {
+            false to (it.message ?: "close error")
+        }
+        ws.sendChecked(NodeResponse.actionResult(cmd.traceId, ok, msg))
     }
 
     private fun handleKeyEvent(cmd: Command) {
@@ -58,12 +84,6 @@ class CommandDispatcher(
         }
         val ok = runCatching { onKeyEvent(key) }.getOrDefault(false)
         ws.sendChecked(NodeResponse.actionResult(cmd.traceId, ok, if (ok) "key $key dispatched" else "key $key unsupported"))
-    }
-
-    private fun handleStopApp(cmd: Command) {
-        val pkg = cmd.payload?.packageName.orEmpty()
-        val ok = runCatching { onStopApp(pkg) }.getOrDefault(false)
-        ws.sendChecked(NodeResponse.actionResult(cmd.traceId, ok, if (ok) "stop_app $pkg" else "stop_app unsupported (no root)"))
     }
 
     private suspend fun handleTap(cmd: Command) {

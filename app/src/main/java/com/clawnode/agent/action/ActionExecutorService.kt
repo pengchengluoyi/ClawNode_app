@@ -10,6 +10,7 @@ import com.clawnode.agent.core.ClawLog
 import com.clawnode.agent.core.ConfigManager
 import com.clawnode.agent.core.NodeStatusBus
 import com.clawnode.agent.service.NodeForegroundService
+import com.clawnode.agent.system.AppController
 import com.clawnode.agent.system.WakeUpActivity
 import com.clawnode.agent.vision.StreamBridge
 import com.clawnode.agent.vision.VisionManager
@@ -36,6 +37,7 @@ class ActionExecutorService : AccessibilityService() {
     private lateinit var gestureController: GestureController
     private lateinit var visionManager: VisionManager
     private lateinit var dispatcher: CommandDispatcher
+    private lateinit var appController: AppController
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -45,6 +47,7 @@ class ActionExecutorService : AccessibilityService() {
         NodeForegroundService.start(applicationContext)
 
         gestureController = GestureController(this)
+        appController = AppController(applicationContext, this)
         wsManager = WsManager(scope)
         wsManager.setDeviceMeta(buildDeviceMeta())
         StreamBridge.wsRef = wsManager
@@ -60,7 +63,12 @@ class ActionExecutorService : AccessibilityService() {
             ws = wsManager,
             onWakeUp = ::launchWakeUp,
             onKeyEvent = ::performKeyEvent,
-            onStopApp = ::stopApp
+            onLaunchApp = { pkg, activity ->
+                appController.launchApp(pkg, activity).let { it.success to it.message }
+            },
+            onCloseApp = { pkg ->
+                appController.closeApp(pkg).let { it.success to it.message }
+            }
         )
 
         wsManager.incomingCommands
@@ -90,11 +98,6 @@ class ActionExecutorService : AccessibilityService() {
         val ok = performGlobalAction(action)
         ClawLog.bp(TAG, "key_event", "key=$key ok=$ok")
         return ok
-    }
-
-    private fun stopApp(pkg: String): Boolean {
-        ClawLog.w(TAG, "stop_app", "pkg=$pkg unsupported (no root)")
-        return false
     }
 
     private fun buildDeviceMeta(): WsManager.DeviceMeta {

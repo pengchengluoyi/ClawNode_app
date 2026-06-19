@@ -28,8 +28,10 @@ data class Command(
         @SerializedName("fps") val fps: Int? = null,
         // KEY_EVENT 的按键：back / home（或 Android keycode）
         @SerializedName("keyevent") val keyevent: String? = null,
-        // STOP_APP 的目标包名
-        @SerializedName("package") val packageName: String? = null
+        // STOP_APP / CLOSE_APP 的目标包名
+        @SerializedName("package") val packageName: String? = null,
+        // OPEN_APP 可选 Activity 全类名
+        @SerializedName("activity") val activity: String? = null
     )
 
     companion object ActionType {
@@ -40,6 +42,11 @@ data class Command(
         const val START_STREAM = "START_STREAM"
         const val STOP_STREAM = "STOP_STREAM"
         const val KEY_EVENT = "KEY_EVENT"
+        const val OPEN_APP = "OPEN_APP"
+        const val CLOSE_APP = "CLOSE_APP"
+        /** @deprecated 请用 [CLOSE_APP]；保留兼容旧服务端 */
         const val STOP_APP = "STOP_APP"
+        /** 部分服务端别名 */
+        const val START_APP = "START_APP"
     }
 }
