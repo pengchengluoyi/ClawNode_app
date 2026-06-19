@@ -1,6 +1,7 @@
 package com.clawnode.agent.ui
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -10,23 +11,17 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import com.clawnode.agent.core.ClawLog
 import com.clawnode.agent.core.ConfigManager
 import com.clawnode.agent.core.ConnectionState
 import com.clawnode.agent.core.NodeStatusBus
 import com.clawnode.agent.databinding.ActivityMainBinding
+import com.clawnode.agent.system.MediaProjectionRequestActivity
 import com.clawnode.agent.system.SystemController
 import com.clawnode.agent.vision.MediaProjectionHolder
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
-/**
- * 节点控制台。职责仅限：
- *  - 编辑并持久化 WebSocket URL / Auth Token（经 [ConfigManager]）；
- *  - 展示无障碍 / 屏幕捕获两项权限就绪状态；
- *  - 实时显示来自 [NodeStatusBus] 的 WebSocket 连接状态。
- *
- * 不含任何节点业务逻辑——保存配置后由常驻服务自动热更新连接。
- */
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
@@ -34,6 +29,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        ClawLog.bp(TAG, "onCreate", "main activity")
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
@@ -45,10 +41,9 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        ClawLog.bp(TAG, "onResume", "refresh permission states")
         refreshPermissionStates()
     }
-
-    // ---------------- 配置 ----------------
 
     private fun loadConfigIntoInputs() {
         lifecycleScope.launch {
@@ -68,6 +63,7 @@ class MainActivity : AppCompatActivity() {
             }
             lifecycleScope.launch {
                 config.save(url, token)
+                ClawLog.bp(TAG, "config_saved", "url=$url")
                 toast("已保存，连接将自动更新")
             }
         }
@@ -77,29 +73,37 @@ class MainActivity : AppCompatActivity() {
         binding.btnNotification.setOnClickListener {
             SystemController.openNotificationSettings(this)
         }
+        binding.btnBattery.setOnClickListener {
+            SystemController.requestIgnoreBatteryOptimizations(this)
+        }
+        binding.btnScreenCapture.setOnClickListener {
+            val intent = Intent(this, MediaProjectionRequestActivity::class.java)
+                .putExtra(MediaProjectionRequestActivity.EXTRA_MODE, MediaProjectionRequestActivity.MODE_AUTHORIZE)
+            startActivity(intent)
+        }
         binding.btnWake.setOnClickListener {
             SystemController.wakeUpScreen(this)
         }
     }
-
-    // ---------------- 权限就绪 ----------------
 
     private fun refreshPermissionStates() {
         val a11yOn = SystemController.isAccessibilityEnabled(this)
         binding.tvAccessibilityState.text =
             if (a11yOn) "🟢 无障碍服务：已就绪" else "🔴 无障碍服务：未开启"
 
-        // 屏幕捕获“就绪”指已持有 MediaProjection 授权（单帧截图本身无需此授权）
         val captureReady = MediaProjectionHolder.hasAuthorization()
         binding.tvCaptureState.text =
-            if (captureReady) "🟢 屏幕捕获：已授权" else "🟡 屏幕捕获：未授权（推流时按需申请）"
-    }
+            if (captureReady) "🟢 屏幕捕获：已授权（支持后台截图）"
+            else "🟡 屏幕捕获：未授权（后台截图需先授权）"
 
-    // ---------------- 连接状态 ----------------
+        val batteryOk = SystemController.isBatteryOptimizationIgnored(this)
+        binding.tvBatteryState.text =
+            if (batteryOk) "🟢 电池优化：已忽略（推荐）"
+            else "🔴 电池优化：未忽略（后台可能被杀死）"
+    }
 
     private fun observeConnectionState() {
         lifecycleScope.launch {
-            // 仅在界面可见时收集，避免后台无谓刷新
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 NodeStatusBus.connection.collect { renderConnection(it) }
             }
@@ -125,8 +129,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ---------------- 通知权限 ----------------
-
     private fun requestNotificationPermissionIfNeeded() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             val granted = ContextCompat.checkSelfPermission(
@@ -144,6 +146,7 @@ class MainActivity : AppCompatActivity() {
         android.widget.Toast.makeText(this, msg, android.widget.Toast.LENGTH_SHORT).show()
 
     companion object {
+        private const val TAG = "MainActivity"
         private const val REQ_NOTIF = 0x01
     }
 }

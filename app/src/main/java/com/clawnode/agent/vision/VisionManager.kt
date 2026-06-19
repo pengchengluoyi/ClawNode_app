@@ -1,25 +1,23 @@
 package com.clawnode.agent.vision
 
 import android.content.Context
-import android.content.Intent
+import android.graphics.Bitmap
 import com.clawnode.agent.action.ActionExecutorService
+import com.clawnode.agent.core.AppForeground
+import com.clawnode.agent.core.ClawLog
 import com.clawnode.agent.model.Command
 import com.clawnode.agent.model.NodeResponse
 import com.clawnode.agent.system.MediaProjectionRequestActivity
 import com.clawnode.agent.ws.WsManager
+import android.content.Intent
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
  * 视觉与屏幕捕获模块。统一两种采集模式的入口：
  *
- *  - 模式 A（单帧，常态）：[captureSingleShot] 调用 [ActionExecutorService]
- *    暴露的挂起函数执行 takeScreenshot()，轻量、无需录屏授权。
- *  - 模式 B（连续推流，按需）：[startStream] 拉起 MediaProjection 授权
- *    并启动 [StreamForegroundService]；[stopStream] 彻底销毁推流资源。
- *
- * 本类只做编排与单帧采集；VirtualDisplay 的生命周期放在前台服务里，
- * 因为 MediaProjection 在 Android 14 强制要求 mediaProjection 类型前台服务。
+ *  - 模式 A（单帧，常态）：前台优先 [takeScreenshot]；后台或失败时降级 MediaProjection 单帧。
+ *  - 模式 B（连续推流，按需）：[startStream] 拉起 MediaProjection 授权并启动 [StreamForegroundService]。
  */
 class VisionManager(
     private val context: Context,
@@ -27,22 +25,22 @@ class VisionManager(
     private val ws: WsManager
 ) {
 
-    // ---------------- 模式 A：单次截图 ----------------
-
-    /**
-     * 处理 GET_SCREENSHOT：经 service 挂起函数拿到位图，
-     * 在 [Dispatchers.IO] 上压缩为 JPEG→Base64，再以 SCREENSHOT_RESULT 回传。
-     */
     suspend fun captureSingleShot(cmd: Command) {
         val quality = (cmd.payload?.quality ?: DEFAULT_QUALITY).coerceIn(1, 100)
+        val traceId = cmd.traceId
+        val inBg = !AppForeground.isInForeground(context)
 
-        val bitmapResult = accessibilityService.captureScreenshotBitmap()
+        ClawLog.bp(TAG, "screenshot_start", "trace=$traceId bg=$inBg quality=$quality")
+
+        val bitmapResult = resolveBitmap(traceId, inBg)
         val bitmap = bitmapResult.getOrElse { err ->
-            ws.send(NodeResponse.actionResult(cmd.traceId, false, err.message ?: "screenshot failed"))
+            ClawLog.w(TAG, "screenshot_fail", "trace=$traceId ${err.message}")
+            ws.sendChecked(
+                NodeResponse.actionResult(traceId, false, err.message ?: "screenshot failed")
+            )
             return
         }
 
-        // 编码是 CPU/IO 密集，切到 IO 池，避免占用默认计算调度器
         val base64 = withContext(Dispatchers.IO) {
             try {
                 ImageCodec.bitmapToJpegBase64(bitmap, quality)
@@ -50,24 +48,50 @@ class VisionManager(
                 bitmap.recycle()
             }
         }
-        ws.send(NodeResponse.screenshot(cmd.traceId, base64))
+
+        val sent = ws.sendChecked(NodeResponse.screenshot(traceId, base64))
+        ClawLog.bp(TAG, "screenshot_done", "trace=$traceId sent=$sent base64Len=${base64.length}")
     }
 
-    // ---------------- 模式 B：连续推流 ----------------
-
     /**
-     * 开启推流。若尚未拿到录屏授权，先拉起授权 Activity；
-     * 授权 Activity 在成功后会自行拉起 [StreamForegroundService]。
-     * 若已有授权，直接启动前台服务。
+     * 前台：先 takeScreenshot，失败再 MediaProjection。
+     * 后台：直接 MediaProjection（需事先授权）。
      */
+    private suspend fun resolveBitmap(traceId: String, inBg: Boolean): Result<Bitmap> {
+        if (!inBg) {
+            val a11y = accessibilityService.captureScreenshotBitmap()
+            if (a11y.isSuccess) {
+                ClawLog.bp(TAG, "screenshot_path", "trace=$traceId mode=takeScreenshot")
+                return a11y
+            }
+            ClawLog.w(
+                TAG, "screenshot_a11y_fail",
+                "trace=$traceId err=${a11y.exceptionOrNull()?.message} → fallback projection"
+            )
+        } else {
+            ClawLog.bp(TAG, "screenshot_path", "trace=$traceId mode=mediaProjection(background)")
+        }
+
+        if (!MediaProjectionHolder.hasAuthorization()) {
+            return Result.failure(
+                IllegalStateException(
+                    "background screenshot requires screen capture authorization; open app to grant"
+                )
+            )
+        }
+        return ScreenshotCaptureBridge.captureOnce(context, traceId)
+    }
+
     fun startStream(cmd: Command) {
         val fps = (cmd.payload?.fps ?: DEFAULT_FPS).coerceIn(1, 30)
+        ClawLog.bp(TAG, "stream_start", "trace=${cmd.traceId} fps=$fps")
 
         if (!MediaProjectionHolder.hasAuthorization()) {
             val intent = Intent(context, MediaProjectionRequestActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 .putExtra(MediaProjectionRequestActivity.EXTRA_TRACE_ID, cmd.traceId)
                 .putExtra(MediaProjectionRequestActivity.EXTRA_FPS, fps)
+                .putExtra(MediaProjectionRequestActivity.EXTRA_MODE, MediaProjectionRequestActivity.MODE_STREAM)
             context.startActivity(intent)
             return
         }
@@ -75,13 +99,14 @@ class VisionManager(
         StreamForegroundService.start(context, cmd.traceId, fps)
     }
 
-    /** 关闭推流并彻底销毁 VirtualDisplay 等资源（cmd 可为空，表示内部清理） */
     fun stopStream(cmd: Command?) {
+        ClawLog.bp(TAG, "stream_stop", "trace=${cmd?.traceId}")
         StreamForegroundService.stop(context)
-        cmd?.let { ws.send(NodeResponse.streamStatus(it.traceId, true, "stream stopped")) }
+        cmd?.let { ws.sendChecked(NodeResponse.streamStatus(it.traceId, true, "stream stopped")) }
     }
 
     companion object {
+        private const val TAG = "VisionManager"
         const val DEFAULT_QUALITY = 80
         const val DEFAULT_FPS = 15
     }

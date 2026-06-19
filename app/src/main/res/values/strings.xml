@@ -3,7 +3,15 @@
     <string name="accessibility_label">ClawNode Agent</string>
     <string name="accessibility_description">ClawNode 具身智能节点：用于按远端网关指令执行屏幕手势与截图采集。</string>
 
+    <string name="node_channel_name">ClawNode 节点服务</string>
+    <string name="node_notification_title">ClawNode 节点在线</string>
+    <string name="node_notification_text">WebSocket 长连接与指令监听运行中</string>
+
     <string name="stream_channel_name">ClawNode 推流服务</string>
     <string name="stream_notification_title">ClawNode 正在采集屏幕</string>
     <string name="stream_notification_text">实时视频流回传中…</string>
+
+    <string name="screenshot_channel_name">ClawNode 截图服务</string>
+    <string name="screenshot_notification_title">ClawNode 正在截图</string>
+    <string name="screenshot_notification_text">后台单帧采集中…</string>
 </resources>

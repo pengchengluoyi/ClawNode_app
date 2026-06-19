@@ -19,6 +19,7 @@ import android.os.IBinder
 import android.util.DisplayMetrics
 import androidx.core.app.NotificationCompat
 import com.clawnode.agent.R
+import com.clawnode.agent.core.ClawLog
 import com.clawnode.agent.model.NodeResponse
 import java.util.concurrent.atomic.AtomicLong
 
@@ -163,9 +164,9 @@ class StreamForegroundService : Service() {
 
             val base64 = ImageCodec.bitmapToJpegBase64(cropped, STREAM_QUALITY)
             cropped.recycle()
-            StreamBridge.wsRef?.send(NodeResponse.streamFrame(traceId, base64, width, height))
+            StreamBridge.wsRef?.sendChecked(NodeResponse.streamFrame(traceId, base64, width, height))
         } catch (t: Throwable) {
-            android.util.Log.w(TAG, "frame encode error: ${t.message}")
+            ClawLog.e(TAG, "frame_encode_error", "trace=$traceId", t)
         } finally {
             image.close()
         }
@@ -201,7 +202,8 @@ class StreamForegroundService : Service() {
     }
 
     private fun sendStreamStatus(success: Boolean, message: String) {
-        StreamBridge.wsRef?.send(NodeResponse.streamStatus(traceId, success, message))
+        ClawLog.bp(TAG, "stream_status", "trace=$traceId ok=$success msg=$message")
+        StreamBridge.wsRef?.sendChecked(NodeResponse.streamStatus(traceId, success, message))
     }
 
     private fun ensureChannel(): String {

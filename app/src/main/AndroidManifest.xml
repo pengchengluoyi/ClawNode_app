@@ -6,9 +6,11 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <!-- MediaProjection 推流前台服务类型（Android 14 强制要求） -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- MediaProjection 推流/后台截图前台服务类型（Android 14 强制要求） -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <application
         android:name=".ClawNodeApp"
@@ -66,9 +68,21 @@
                 android:resource="@xml/accessibility_service_config" />
         </service>
 
+        <!-- 节点常驻前台服务：WebSocket 保活 -->
+        <service
+            android:name=".service.NodeForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
         <!-- 推流前台服务：承载 MediaProjection / VirtualDisplay -->
         <service
             android:name=".vision.StreamForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
+
+        <!-- 单帧后台截图前台服务 -->
+        <service
+            android:name=".vision.ScreenshotForegroundService"
             android:exported="false"
             android:foregroundServiceType="mediaProjection" />
 

@@ -1,5 +1,6 @@
 package com.clawnode.agent.ws
 
+import com.clawnode.agent.core.ClawLog
 import com.clawnode.agent.core.ConnectionState
 import com.clawnode.agent.core.NodeConfig
 import com.clawnode.agent.core.NodeSettings
@@ -33,14 +34,6 @@ import kotlin.math.pow
 
 /**
  * WebSocket 通信模块。
- *
- * 职责：
- *  - 与 Gateway 建立持久化长连接；
- *  - 网络波动下指数退避重连（带抖动）；
- *  - 收到的指令解析为 [Command] 经 [incomingCommands] 暴露给分发器；
- *  - 把执行结果 / 图像数据序列化后回传网关。
- *
- * 设计为可注入的 scope（由 AccessibilityService 持有），不自行管理线程池。
  */
 class WsManager(
     private val scope: CoroutineScope,
@@ -50,7 +43,6 @@ class WsManager(
         .pingInterval(NodeConfig.PING_INTERVAL_MS, TimeUnit.MILLISECONDS)
         .retryOnConnectionFailure(true)
         .connectTimeout(15, TimeUnit.SECONDS)
-        // WebSocket 读超时设为 0 = 永不超时，长连接靠 ping 维持
         .readTimeout(0, TimeUnit.MILLISECONDS)
         .build()
 
@@ -60,27 +52,18 @@ class WsManager(
     @Volatile
     private var manualClosed = false
 
-    /**
-     * 鉴权失败熔断标志。一旦网关回 AUTH_FAILED 即置位，连接循环立刻终止、
-     * 清空退避重试，直到用户保存新 Token（applySettings 时复位）。防止
-     * 用错 token 时无意义地指数重连耗电。
-     */
     @Volatile
     private var authHalted = false
 
-    /** 当前生效配置（URL + token + sn）。由服务在配置变更时通过 [applySettings] 注入。 */
     @Volatile
     private var settings: NodeSettings = NodeSettings.EMPTY
 
-    /**
-     * 设备元信息（型号/系统/分辨率），由服务在装配时通过 [setDeviceMeta] 注入，
-     * 用于构造 register 帧。WsManager 自身不依赖 Android Context。
-     */
     @Volatile
     private var deviceMeta: DeviceMeta = DeviceMeta("unknown", "Android", "0x0")
 
     fun setDeviceMeta(meta: DeviceMeta) {
         deviceMeta = meta
+        ClawLog.bp(TAG, "device_meta", "model=${meta.model} res=${meta.resolution}")
     }
 
     data class DeviceMeta(val model: String, val osVersion: String, val resolution: String)
@@ -88,38 +71,29 @@ class WsManager(
     private var connectJob: Job? = null
     private var heartbeatJob: Job? = null
     private var reconnectAttempt = 0
+    private var heartbeatSeq = 0
 
     private val _state = MutableStateFlow<ConnectionState>(ConnectionState.Idle)
     val state: StateFlow<ConnectionState> = _state.asStateFlow()
 
-    /** 统一变更状态：同时更新本地流并转发到全局总线供 UI 订阅 */
     private fun setState(s: ConnectionState) {
+        ClawLog.bp(TAG, "state_change", "${_state.value} → $s")
         _state.value = s
         NodeStatusBus.publish(s)
     }
 
-    /** 上行解析后的指令流；replay=0，extraBufferCapacity 防止快速下发时丢包 */
     private val _incomingCommands = MutableSharedFlow<Command>(
         replay = 0,
         extraBufferCapacity = 64
     )
     val incomingCommands: SharedFlow<Command> = _incomingCommands.asSharedFlow()
 
-    /**
-     * 应用新配置并据此决定连接行为（连接门禁的核心）：
-     *  - 若 URL 不合法（非 ws/wss）→ 停止连接并保持空闲；
-     *  - 若 URL 有效但与当前不同 → 断开旧连接、用新配置重连；
-     *  - 若 URL 有效且未变 → 保持现状（幂等）。
-     *
-     * 注意：无障碍服务是否就绪的门禁在调用方（仅服务装配后才会 applySettings），
-     * 因此能进到这里就意味着服务已连接。
-     */
     fun applySettings(newSettings: NodeSettings) {
         val old = settings
         settings = newSettings
 
         if (!newSettings.isConnectable) {
-            log("settings not connectable (url='${newSettings.wsUrl}'), staying idle")
+            ClawLog.w(TAG, "settings_idle", "url='${newSettings.wsUrl}' not connectable")
             stop()
             return
         }
@@ -127,48 +101,56 @@ class WsManager(
         val tokenChanged = old.authToken != newSettings.authToken
         val urlChanged = old.wsUrl != newSettings.wsUrl
 
-        // 用户更新了 token（或 URL）→ 解除鉴权熔断，给新凭证一次机会
         if (authHalted && (tokenChanged || urlChanged)) {
-            log("credentials changed; clearing auth-halt and retrying")
+            ClawLog.bp(TAG, "auth_halt_clear", "credentials updated, retry allowed")
             authHalted = false
         }
 
         val running = connectJob?.isActive == true
         when {
-            authHalted -> log("auth halted; awaiting new credentials")
-            !running -> start()
+            authHalted -> ClawLog.w(TAG, "auth_halted", "awaiting new credentials")
+            !running -> {
+                ClawLog.bp(TAG, "connect_start", "sn=${newSettings.nodeSn} url=${newSettings.wsUrl}")
+                start()
+            }
             urlChanged -> {
-                // URL 变了：重启连接循环以走新地址
-                log("ws url changed, reconnecting to ${newSettings.wsUrl}")
+                ClawLog.bp(TAG, "settings_url_change", "reconnect → ${newSettings.wsUrl}")
                 restart()
             }
             tokenChanged -> {
-                // token 变了：重连以用新凭证重新握手
-                log("auth token changed, reconnecting to re-handshake")
+                ClawLog.bp(TAG, "settings_token_change", "reconnect for re-handshake")
                 restart()
             }
-            else -> log("settings unchanged; connection kept")
+            else -> ClawLog.bp(TAG, "settings_unchanged", "connection kept")
         }
     }
 
-    /** 启动连接（幂等）。会一直存活，断线自动重连，直到 [stop]。 */
     fun start() {
         if (!settings.isConnectable) {
-            log("start() blocked: url not connectable")
+            ClawLog.w(TAG, "start_blocked", "url not connectable")
             return
         }
-        if (connectJob?.isActive == true) return
+        if (connectJob?.isActive == true) {
+            ClawLog.bp(TAG, "start_skip", "connect loop already running")
+            return
+        }
         manualClosed = false
         connectJob = scope.launch { connectLoop() }
     }
 
     private fun restart() {
-        stop()
+        ClawLog.bp(TAG, "restart", "stop then start")
+        stopInternal(resetAuthHalt = false)
+        manualClosed = false
         start()
     }
 
-    /** 主动停止，不再重连 */
     fun stop() {
+        stopInternal(resetAuthHalt = true)
+    }
+
+    private fun stopInternal(resetAuthHalt: Boolean) {
+        ClawLog.bp(TAG, "stop", "manualClosed=true resetAuth=$resetAuthHalt")
         manualClosed = true
         stopHeartbeat()
         connectJob?.cancel()
@@ -176,52 +158,66 @@ class WsManager(
         webSocket?.close(NORMAL_CLOSURE, "client stop")
         webSocket = null
         reconnectAttempt = 0
-        authHalted = false
+        if (resetAuthHalt) authHalted = false
         setState(ConnectionState.Idle)
     }
 
-    /** 回传文本帧（JSON）。线程安全：OkHttp WebSocket.send 自身线程安全。 */
-    fun send(response: NodeResponse): Boolean {
-        val ws = webSocket ?: return false
-        return ws.send(gson.toJson(response))
+    fun send(response: NodeResponse): Boolean = sendChecked(response)
+
+    /** 发送并记录断点日志，便于排查「本地执行了但服务端没收到」。 */
+    fun sendChecked(response: NodeResponse): Boolean {
+        val ws = webSocket
+        if (ws == null) {
+            ClawLog.w(TAG, "send_no_ws", "trace=${response.traceId} type=${response.type}")
+            return false
+        }
+        val json = gson.toJson(response)
+        val ok = ws.send(json)
+        if (ok) {
+            ClawLog.bp(TAG, "send_ok", "trace=${response.traceId} type=${response.type} bytes=${json.length}")
+        } else {
+            ClawLog.w(TAG, "send_fail", "trace=${response.traceId} type=${response.type}")
+        }
+        return ok
     }
 
-    fun sendRaw(json: String): Boolean = webSocket?.send(json) ?: false
-
-    // ----------------------------------------------------------------
+    fun sendRaw(json: String): Boolean {
+        val ws = webSocket ?: run {
+            ClawLog.w(TAG, "send_raw_no_ws", "bytes=${json.length}")
+            return false
+        }
+        val ok = ws.send(json)
+        ClawLog.bp(TAG, if (ok) "send_raw_ok" else "send_raw_fail", "bytes=${json.length}")
+        return ok
+    }
 
     private suspend fun connectLoop() {
+        ClawLog.bp(TAG, "connect_loop", "entered")
         while (scope.isActive && !manualClosed && !authHalted) {
-            // CompletableJob 风格：用一个挂起点等待本次连接结束
             val closedReason = openOnce()
 
             if (manualClosed || authHalted) break
 
-            // 计算指数退避：base * factor^attempt，封顶 + 抖动
             reconnectAttempt += 1
             val backoff = (NodeConfig.RECONNECT_BASE_DELAY_MS *
                 NodeConfig.RECONNECT_FACTOR.pow(reconnectAttempt - 1)).toLong()
             val capped = min(backoff, NodeConfig.RECONNECT_MAX_DELAY_MS)
-            // 抖动：用 attempt 派生的伪随机，避免依赖被禁用的 Math.random()
             val jitter = (reconnectAttempt * 137L) % NodeConfig.RECONNECT_JITTER_MS
             val delayMs = capped + jitter
 
             setState(ConnectionState.Reconnecting(reconnectAttempt, delayMs))
-            log("connection closed ($closedReason); reconnect #$reconnectAttempt in ${delayMs}ms")
+            ClawLog.w(TAG, "reconnect_scheduled", "reason=$closedReason attempt=$reconnectAttempt delayMs=$delayMs")
             delay(delayMs)
         }
+        ClawLog.bp(TAG, "connect_loop", "exited manualClosed=$manualClosed authHalted=$authHalted")
     }
 
-    /**
-     * 打开一次连接并挂起，直到该连接关闭或失败。
-     * 返回关闭原因字符串。用回调 → 挂起的桥接，避免回调地狱。
-     */
     private suspend fun openOnce(): String {
         setState(ConnectionState.Connecting)
         val current = settings
-        // MiniOrangeServer 的 /ws 在握手阶段读取 query 参数 token 鉴权；
-        // 同时保留 Authorization Header 以兼容通用网关。
         val url = buildUrlWithToken(current.wsUrl, current.authToken)
+        ClawLog.bp(TAG, "ws_open", "sn=${current.nodeSn} url=$url")
+
         val request = Request.Builder()
             .url(url)
             .addHeader("X-Node-Id", current.nodeSn)
@@ -239,8 +235,8 @@ class WsManager(
                 webSocket = ws
                 reconnectAttempt = 0
                 setState(ConnectionState.Connected)
-                log("connected to ${current.wsUrl}")
-                // 上送注册帧：让本节点进入服务端设备列表并标记为直连节点
+                ClawLog.bp(TAG, "ws_open_ok", "code=${response.code} sn=${current.nodeSn}")
+
                 val register = RegisterFrame(
                     data = RegisterFrame.Data(
                         sn = current.nodeSn,
@@ -249,8 +245,10 @@ class WsManager(
                         resolution = deviceMeta.resolution
                     )
                 )
-                ws.send(gson.toJson(register))
-                // 启动应用层心跳（服务端按 heartbeat action 判活）
+                val regJson = gson.toJson(register)
+                val regOk = ws.send(regJson)
+                ClawLog.bp(TAG, "register_sent", "sn=${current.nodeSn} ok=$regOk")
+
                 startHeartbeat(current.nodeSn)
             }
 
@@ -259,18 +257,18 @@ class WsManager(
             }
 
             override fun onMessage(ws: WebSocket, bytes: ByteString) {
-                // 协议为 JSON 文本；二进制帧按 UTF-8 兜底解析
                 dispatchText(bytes.utf8())
             }
 
             override fun onClosing(ws: WebSocket, code: Int, reason: String) {
+                ClawLog.w(TAG, "ws_closing", "code=$code reason=$reason")
                 ws.close(NORMAL_CLOSURE, null)
             }
 
             override fun onClosed(ws: WebSocket, code: Int, reason: String) {
                 webSocket = null
                 stopHeartbeat()
-                // 鉴权失败导致的主动关闭：保留 AuthFailed 状态，不覆盖为 Disconnected
+                ClawLog.w(TAG, "ws_closed", "code=$code reason=$reason")
                 if (!authHalted) setState(ConnectionState.Disconnected("closed[$code] $reason"))
                 if (!done.isCompleted) done.complete("closed[$code] $reason")
             }
@@ -278,8 +276,8 @@ class WsManager(
             override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
                 webSocket = null
                 stopHeartbeat()
+                ClawLog.e(TAG, "ws_failure", "http=${response?.code} msg=${t.message}", t)
                 if (!authHalted) setState(ConnectionState.Disconnected(t.message ?: "failure"))
-                log("ws failure: ${t.message}")
                 if (!done.isCompleted) done.complete("failure: ${t.message}")
             }
         }
@@ -288,12 +286,10 @@ class WsManager(
         return done.await()
     }
 
-    /**
-     * 解析上行文本并路由。先窥探是否为控制帧（带 `type`），
-     * 是则就地处理（鉴权结果等）；否则按动作指令（带 `action_type`）投递。
-     */
     private fun dispatchText(text: String) {
-        // 1) 控制帧优先：AUTH_OK / AUTH_FAILED
+        val preview = if (text.length > 120) text.take(120) + "…" else text
+        ClawLog.bp(TAG, "rx", preview)
+
         val control = runCatching { gson.fromJson(text, GatewayControl::class.java) }.getOrNull()
         when (control?.type) {
             GatewayControl.TYPE_AUTH_OK -> {
@@ -306,53 +302,58 @@ class WsManager(
             }
         }
 
-        // 2) MiniOrangeServer 的服务端响应帧（带 action + code）：
-        //    register_clawnode 成功(code=200) → 进入已鉴权终态；其余 ack 忽略。
         val ack = runCatching { gson.fromJson(text, ServerAck::class.java) }.getOrNull()
         if (ack?.action != null) {
+            ClawLog.bp(TAG, "rx_ack", "action=${ack.action} code=${ack.code}")
             if (ack.action == "register_clawnode" && ack.code == 200) {
-                log("register_clawnode ok → authenticated")
                 setState(ConnectionState.Authenticated)
             }
-            // 其它服务端 ack（heartbeat 回执、错误码等）无需作为指令处理
             return
         }
 
-        // 3) 动作指令：必须带非空 action_type
         val cmd = runCatching { gson.fromJson(text, Command::class.java) }.getOrNull()
         if (cmd == null || cmd.actionType.isBlank()) {
-            log("drop malformed message: $text")
+            ClawLog.w(TAG, "rx_drop", "malformed: $preview")
             return
         }
-        // tryEmit 不挂起；缓冲已足够大，极端丢弃也只丢单条指令
-        if (!_incomingCommands.tryEmit(cmd)) {
-            log("command buffer full, dropped trace=${cmd.traceId}")
+        val emitted = _incomingCommands.tryEmit(cmd)
+        ClawLog.bp(TAG, "cmd_emit", "trace=${cmd.traceId} action=${cmd.actionType} ok=$emitted")
+        if (!emitted) {
+            ClawLog.w(TAG, "cmd_buffer_full", "trace=${cmd.traceId}")
         }
     }
 
-    /** 服务端响应帧的窥探模型（仅取路由所需字段） */
     private data class ServerAck(val action: String? = null, val code: Int? = null)
-
-    // ---- 应用层心跳：服务端按 heartbeat action 判活（60s 超时） ----
 
     private fun startHeartbeat(sn: String) {
         stopHeartbeat()
+        heartbeatSeq = 0
         heartbeatJob = scope.launch {
             while (isActive) {
+                // 连接后立即发首包，避免服务端 60s 超时窗口内一直等不到 heartbeat
+                if (!sendHeartbeat(sn)) break
                 delay(NodeConfig.HEARTBEAT_INTERVAL_MS)
-                val ws = webSocket ?: break
-                val ok = ws.send(gson.toJson(HeartbeatFrame(data = HeartbeatFrame.Data(sn = sn))))
-                if (!ok) break
             }
         }
     }
 
+    private fun sendHeartbeat(sn: String): Boolean {
+        val ws = webSocket ?: return false
+        heartbeatSeq += 1
+        val json = gson.toJson(HeartbeatFrame(data = HeartbeatFrame.Data(sn = sn)))
+        val ok = ws.send(json)
+        ClawLog.bp(TAG, "heartbeat", "seq=$heartbeatSeq sn=$sn ok=$ok")
+        return ok
+    }
+
     private fun stopHeartbeat() {
+        if (heartbeatJob != null) {
+            ClawLog.bp(TAG, "heartbeat_stop", "lastSeq=$heartbeatSeq")
+        }
         heartbeatJob?.cancel()
         heartbeatJob = null
     }
 
-    /** 把 token 拼到 URL 的 query（MiniOrangeServer /ws 在握手阶段读取 ?token=）。 */
     private fun buildUrlWithToken(baseUrl: String, token: String): String {
         if (token.isBlank() || baseUrl.contains("token=")) return baseUrl
         val sep = if (baseUrl.contains("?")) "&" else "?"
@@ -360,13 +361,12 @@ class WsManager(
     }
 
     private fun handleAuthOk() {
-        log("AUTH_OK: authenticated")
+        ClawLog.bp(TAG, "auth_ok", "gateway authenticated")
         setState(ConnectionState.Authenticated)
     }
 
     private fun handleAuthFailed(reason: String) {
-        log("AUTH_FAILED: $reason — halting reconnects")
-        // 熔断：置位后断开，connectLoop 不再重试，清空退避队列
+        ClawLog.e(TAG, "auth_failed", reason)
         authHalted = true
         reconnectAttempt = 0
         webSocket?.close(NORMAL_CLOSURE, "auth failed")
@@ -375,8 +375,6 @@ class WsManager(
         connectJob = null
         setState(ConnectionState.AuthFailed(reason))
     }
-
-    private fun log(msg: String) = android.util.Log.d(TAG, msg)
 
     companion object {
         private const val TAG = "WsManager"

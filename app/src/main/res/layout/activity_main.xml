@@ -91,6 +91,14 @@
             android:textSize="15sp"
             android:text="● 屏幕捕获：检测中…" />
 
+        <TextView
+            android:id="@+id/tvBatteryState"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:textSize="15sp"
+            android:text="● 电池优化：检测中…" />
+
         <Button
             android:id="@+id/btnAccessibility"
             android:layout_width="match_parent"
@@ -118,11 +126,25 @@
 
         <!-- ============ 工具区 ============ -->
         <Button
-            android:id="@+id/btnNotification"
+            android:id="@+id/btnBattery"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="28dp"
-            android:text="通知权限设置（推流前台通知）" />
+            android:text="关闭电池优化（后台保活）" />
+
+        <Button
+            android:id="@+id/btnScreenCapture"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="授权屏幕捕获（后台截图）" />
+
+        <Button
+            android:id="@+id/btnNotification"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="通知权限设置（前台通知）" />
 
         <Button
             android:id="@+id/btnWake"
