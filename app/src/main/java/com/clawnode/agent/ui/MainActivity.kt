@@ -19,6 +19,7 @@ import com.clawnode.agent.core.ConfigManager
 import com.clawnode.agent.core.ConnectionState
 import com.clawnode.agent.core.NodeStatusBus
 import com.clawnode.agent.databinding.ActivityMainBinding
+import com.clawnode.agent.log.LogUploadManager
 import com.clawnode.agent.system.MediaProjectionRequestActivity
 import com.clawnode.agent.system.SystemController
 import com.clawnode.agent.update.AppUpdateManager
@@ -43,19 +44,23 @@ class MainActivity : AppCompatActivity() {
         bindButtons()
         observeConnectionState()
         requestNotificationPermissionIfNeeded()
+        promptInstallPermissionIfNeeded()
     }
 
     override fun onResume() {
         super.onResume()
-        ClawLog.bp(TAG, "onResume", "refresh permission states")
-        refreshPermissionStates()
+        ClawLog.bp(TAG, "onResume", "refresh states")
+        runCatching { refreshPermissionStates() }
+            .onFailure { e -> ClawLog.e(TAG, "refresh_fail", "", e) }
     }
 
     private fun loadConfigIntoInputs() {
         lifecycleScope.launch {
-            val s = config.settings.first()
-            binding.etWsUrl.setText(s.wsUrl)
-            binding.etAuthToken.setText(s.authToken)
+            runCatching {
+                val s = config.settings.first()
+                binding.etWsUrl.setText(s.wsUrl)
+                binding.etAuthToken.setText(s.authToken)
+            }.onFailure { e -> ClawLog.e(TAG, "load_config_fail", "", e) }
         }
     }
 
@@ -73,9 +78,7 @@ class MainActivity : AppCompatActivity() {
                 toast("已保存，连接将自动更新")
             }
         }
-        binding.btnRestricted.setOnClickListener {
-            showRestrictedSettingsGuide()
-        }
+        binding.btnRestricted.setOnClickListener { showRestrictedSettingsGuide() }
         binding.btnAccessibility.setOnClickListener {
             if (!SystemController.isRestrictedSettingsAllowed(this)) {
                 showRestrictedSettingsGuide()
@@ -95,9 +98,20 @@ class MainActivity : AppCompatActivity() {
                     .putExtra(MediaProjectionRequestActivity.EXTRA_MODE, MediaProjectionRequestActivity.MODE_AUTHORIZE)
             )
         }
+        binding.btnUploadLog.setOnClickListener { uploadLogs() }
+        binding.btnShareLog.setOnClickListener { shareLogs() }
+        binding.btnInstallPerm.setOnClickListener {
+            AppUpdateManager.openInstallPermissionSettings(this)
+        }
         binding.btnCheckUpdate.setOnClickListener { checkUpdate(manual = true) }
         binding.btnWake.setOnClickListener {
             SystemController.wakeUpScreen(this)
+        }
+    }
+
+    private fun promptInstallPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !AppUpdateManager.canInstallPackages(this)) {
+            binding.btnInstallPerm.visibility = View.VISIBLE
         }
     }
 
@@ -106,13 +120,10 @@ class MainActivity : AppCompatActivity() {
             .setTitle("解除「受限设置」（必做）")
             .setMessage(
                 "APK 直接安装的应用在 Android 13+ 默认被限制，无障碍会显示「由受限设置控制」。\n\n" +
-                    "请按顺序操作：\n" +
                     "1. 点「确定」进入应用详情\n" +
-                    "2. 点右上角 ⋮（更多）\n" +
-                    "3. 选择「允许受限设置」\n" +
-                    "4. 返回本页，点「开启无障碍服务」\n" +
-                    "5. 打开 ClawNode Agent 开关\n\n" +
-                    "小米/红米：设置 → 应用设置 → 应用管理 → ClawNode → 权限相关 → 允许受限设置"
+                    "2. 右上角 ⋮ → 「允许受限设置」\n" +
+                    "3. 返回开启 ClawNode Agent 无障碍\n\n" +
+                    "小米：应用管理 → ClawNode → 权限 → 允许受限设置"
             )
             .setPositiveButton("去应用详情") { _, _ ->
                 SystemController.openAppDetailsSettings(this)
@@ -128,8 +139,7 @@ class MainActivity : AppCompatActivity() {
         when {
             a11yOn -> binding.tvAccessibilityState.text = "🟢 无障碍服务：已就绪"
             !restrictedOk -> {
-                binding.tvAccessibilityState.text =
-                    "🔴 无障碍：受限设置未解除（见下方红色提示）"
+                binding.tvAccessibilityState.text = "🔴 无障碍：受限设置未解除"
                 binding.tvRestrictedHint.visibility = View.VISIBLE
                 binding.btnRestricted.visibility = View.VISIBLE
             }
@@ -140,15 +150,53 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        val captureReady = MediaProjectionHolder.hasAuthorization()
         binding.tvCaptureState.text =
-            if (captureReady) "🟢 屏幕捕获：已授权（支持后台截图）"
+            if (MediaProjectionHolder.hasAuthorization()) "🟢 屏幕捕获：已授权（支持后台截图）"
             else "🟡 屏幕捕获：未授权（后台截图需先授权）"
 
-        val batteryOk = SystemController.isBatteryOptimizationIgnored(this)
         binding.tvBatteryState.text =
-            if (batteryOk) "🟢 电池优化：已忽略（推荐）"
+            if (SystemController.isBatteryOptimizationIgnored(this)) "🟢 电池优化：已忽略（推荐）"
             else "🔴 电池优化：未忽略（后台可能被杀死）"
+
+        binding.btnInstallPerm.visibility =
+            if (AppUpdateManager.canInstallPackages(this)) View.GONE else View.VISIBLE
+    }
+
+    private fun uploadLogs() {
+        lifecycleScope.launch {
+            binding.btnUploadLog.isEnabled = false
+            binding.btnUploadLog.text = "上传中…"
+            try {
+                val result = LogUploadManager.uploadWithCurrentSettings(this@MainActivity)
+                if (result.success) {
+                    toast(result.message)
+                } else {
+                    AlertDialog.Builder(this@MainActivity)
+                        .setTitle("上传失败")
+                        .setMessage("${result.message}\n\n可改用「分享日志」通过微信/邮件发送。")
+                        .setPositiveButton("分享日志") { _, _ -> shareLogs() }
+                        .setNegativeButton("关闭", null)
+                        .show()
+                }
+            } catch (e: Exception) {
+                ClawLog.e(TAG, "upload_log_fail", "", e)
+                toast("上传异常：${e.message}")
+            } finally {
+                binding.btnUploadLog.isEnabled = true
+                binding.btnUploadLog.text = "上传日志到网关"
+            }
+        }
+    }
+
+    private fun shareLogs() {
+        lifecycleScope.launch {
+            try {
+                val file = LogUploadManager.prepareExportFile(this@MainActivity)
+                LogUploadManager.shareLogFile(this@MainActivity, file)
+            } catch (e: Exception) {
+                toast("导出日志失败：${e.message}")
+            }
+        }
     }
 
     private fun checkUpdate(manual: Boolean) {
@@ -156,22 +204,33 @@ class MainActivity : AppCompatActivity() {
             binding.btnCheckUpdate.isEnabled = false
             binding.btnCheckUpdate.text = "检查中…"
             try {
+                if (!AppUpdateManager.canInstallPackages(this@MainActivity)) {
+                    AlertDialog.Builder(this@MainActivity)
+                        .setTitle("需要安装权限")
+                        .setMessage("自动更新需先允许「安装未知应用」（一次性设置）")
+                        .setPositiveButton("去设置") { _, _ ->
+                            AppUpdateManager.openInstallPermissionSettings(this@MainActivity)
+                        }
+                        .setNegativeButton("取消", null)
+                        .show()
+                    return@launch
+                }
                 val info = AppUpdateManager.checkForUpdate()
                 if (!info.hasUpdate) {
                     toast("已是最新版本 ${info.currentVersion}")
                     return@launch
                 }
                 if (info.downloadUrl.isNullOrBlank()) {
-                    toast("发现新版本 ${info.latestVersion}，但 Release 无 APK 附件")
+                    toast("发现 v${info.latestVersion}，但 Release 无 APK")
                     return@launch
                 }
-                showUpdateDialog(info.latestVersion, info.releaseNotes, info.downloadUrl, info.assetName ?: "clawnode.apk")
+                showUpdateDialog(info.latestVersion, info.releaseNotes, info.downloadUrl, info.assetName ?: "ClawNode.apk")
             } catch (e: Exception) {
                 ClawLog.e(TAG, "update_check_fail", "", e)
                 if (manual) toast("检查更新失败：${e.message}")
             } finally {
                 binding.btnCheckUpdate.isEnabled = true
-                binding.btnCheckUpdate.text = "检查更新（GitHub）"
+                binding.btnCheckUpdate.text = "检查更新（GitHub 自动）"
             }
         }
     }
@@ -179,8 +238,8 @@ class MainActivity : AppCompatActivity() {
     private fun showUpdateDialog(version: String, notes: String, url: String, fileName: String) {
         AlertDialog.Builder(this)
             .setTitle("发现新版本 v$version")
-            .setMessage(notes.ifBlank { "是否下载并安装？" })
-            .setPositiveButton("下载安装") { _, _ ->
+            .setMessage(notes.ifBlank { "将自动下载并弹出系统安装确认。" })
+            .setPositiveButton("立即更新") { _, _ ->
                 lifecycleScope.launch { downloadAndInstall(url, fileName) }
             }
             .setNegativeButton("取消", null)
@@ -188,48 +247,38 @@ class MainActivity : AppCompatActivity() {
     }
 
     private suspend fun downloadAndInstall(url: String, fileName: String) {
-        if (!AppUpdateManager.canInstallPackages(this)) {
-            AlertDialog.Builder(this)
-                .setTitle("需要安装权限")
-                .setMessage("请允许「安装未知应用」后再试")
-                .setPositiveButton("去设置") { _, _ ->
-                    AppUpdateManager.openInstallPermissionSettings(this)
-                }
-                .show()
-            return
-        }
         binding.btnCheckUpdate.text = "下载中…"
         binding.btnCheckUpdate.isEnabled = false
         try {
             val file = AppUpdateManager.downloadApk(this, url, fileName)
             AppUpdateManager.installApk(this, file)
-            toast("已下载，请在系统弹窗中确认安装")
+            toast("已下载，请在系统弹窗点「安装」")
         } catch (e: Exception) {
             ClawLog.e(TAG, "update_download_fail", "", e)
             toast("下载失败：${e.message}")
         } finally {
             binding.btnCheckUpdate.isEnabled = true
-            binding.btnCheckUpdate.text = "检查更新（GitHub）"
+            binding.btnCheckUpdate.text = "检查更新（GitHub 自动）"
         }
     }
 
     private fun observeConnectionState() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
-                NodeStatusBus.connection.collect { renderConnection(it) }
+                NodeStatusBus.connection.collect { state ->
+                    runCatching { renderConnection(state) }
+                }
             }
         }
     }
 
     private fun renderConnection(state: ConnectionState) {
         binding.tvConnState.text = when (state) {
-            is ConnectionState.Idle ->
-                "⚪ 未连接（请确认无障碍已开启且已填写有效 URL）"
+            is ConnectionState.Idle -> "⚪ 未连接（请确认无障碍已开启且已填写有效 URL）"
             is ConnectionState.Connecting -> "🟡 连接中…"
             is ConnectionState.Connected -> "🟡 已连接，鉴权中…"
             is ConnectionState.Authenticated -> "🟢 已连接且已鉴权"
-            is ConnectionState.Reconnecting ->
-                "🟠 重连中…（第 ${state.attempt} 次，${state.nextDelayMs}ms 后）"
+            is ConnectionState.Reconnecting -> "🟠 重连中…（第 ${state.attempt} 次，${state.nextDelayMs}ms 后）"
             is ConnectionState.Disconnected -> "🔴 已断开：${state.reason}"
             is ConnectionState.AuthFailed -> "⛔ 鉴权失败，请检查 Token（${state.reason}）"
         }
@@ -237,10 +286,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun requestNotificationPermissionIfNeeded() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            val granted = ContextCompat.checkSelfPermission(
-                this, Manifest.permission.POST_NOTIFICATIONS
-            ) == PackageManager.PERMISSION_GRANTED
-            if (!granted) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED
+            ) {
                 ActivityCompat.requestPermissions(
                     this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQ_NOTIF
                 )

@@ -12,8 +12,8 @@ android {
         // takeScreenshot() 是 API 30 引入的硬约束，因此 minSdk 不能低于 30
         minSdk = 30
         targetSdk = 34
-        versionCode = 5
-        versionName = "1.4.0"
+        versionCode = 6
+        versionName = "1.5.0"
     }
 
     signingConfigs {
@@ -35,6 +35,7 @@ android {
         }
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("debug")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

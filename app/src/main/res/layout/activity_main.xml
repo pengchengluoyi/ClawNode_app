@@ -176,6 +176,27 @@
             android:text="通知权限设置（前台通知）" />
 
         <Button
+            android:id="@+id/btnUploadLog"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="上传日志到网关" />
+
+        <Button
+            android:id="@+id/btnShareLog"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="分享日志（离线备用）" />
+
+        <Button
+            android:id="@+id/btnInstallPerm"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="允许自动安装更新（一次性）" />
+
+        <Button
             android:id="@+id/btnCheckUpdate"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
