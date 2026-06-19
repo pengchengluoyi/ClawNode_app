@@ -48,12 +48,12 @@ object SystemController {
         return runCatching {
             val appOps = context.getSystemService(AppOpsManager::class.java)
                 ?: return true
-            val op = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                AppOpsManager.OPSTR_ACCESS_RESTRICTED_SETTINGS
-            } else {
-                OP_ACCESS_RESTRICTED_SETTINGS
-            }
-            val mode = appOps.checkOpNoThrow(op, Process.myUid(), context.packageName)
+            // 使用字符串常量，兼容 compileSdk 34（OPSTR_ACCESS_RESTRICTED_SETTINGS 在部分 SDK 未导出）
+            val mode = appOps.checkOpNoThrow(
+                OP_ACCESS_RESTRICTED_SETTINGS,
+                Process.myUid(),
+                context.packageName
+            )
             val allowed = mode == AppOpsManager.MODE_ALLOWED
             ClawLog.bp(TAG, "restricted_check", "mode=$mode allowed=$allowed api=${Build.VERSION.SDK_INT}")
             allowed
