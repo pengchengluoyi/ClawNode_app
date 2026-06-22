@@ -24,6 +24,7 @@ import com.clawnode.agent.vision.MediaProjectionHolder
 import com.clawnode.agent.vision.StreamBridge
 import com.clawnode.agent.vision.VisionManager
 import com.clawnode.agent.ws.ConnectionKeepAlive
+import com.clawnode.agent.ws.WsManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
