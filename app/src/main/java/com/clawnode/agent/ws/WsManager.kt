@@ -412,9 +412,10 @@ class WsManager(
         }
 
         val ack = runCatching { gson.fromJson(text, ServerAck::class.java) }.getOrNull()
-        if (!ack?.action.isNullOrBlank()) {
-            ClawLog.bp(TAG, "rx_ack", "action=${ack.action} code=${ack.code}")
-            if (ack.action == "register_clawnode" && ack.code == 200) {
+        val ackAction = ack?.action
+        if (!ackAction.isNullOrBlank()) {
+            ClawLog.bp(TAG, "rx_ack", "action=$ackAction code=${ack?.code}")
+            if (ackAction == "register_clawnode" && ack?.code == 200) {
                 setState(ConnectionState.Authenticated)
             }
             return
