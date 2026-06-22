@@ -23,7 +23,7 @@ class CommandDispatcher(
     private val onCloseApp: (String) -> Pair<Boolean, String>,
     private val onKillApp: (String) -> Pair<Boolean, String>,
     private val onClearAppCache: (String) -> Pair<Boolean, String>,
-    private val onExportLogs: suspend () -> Pair<Boolean, String>,
+    private val onExportLogs: suspend (Int) -> Pair<Boolean, String>,
 ) {
 
     fun dispatch(cmd: Command) {
@@ -104,7 +104,9 @@ class CommandDispatcher(
     }
 
     private suspend fun handleExportLogs(cmd: Command) {
-        val (ok, msg) = runCatching { onExportLogs() }.getOrElse { false to (it.message ?: "export error") }
+        val minutes = cmd.payload?.minutes?.coerceIn(1, 24 * 60)
+            ?: LogUploadManager.DEFAULT_WINDOW_MINUTES
+        val (ok, msg) = runCatching { onExportLogs(minutes) }.getOrElse { false to (it.message ?: "export error") }
         ws.sendChecked(NodeResponse.actionResult(cmd.traceId, ok, msg))
     }
 

@@ -28,6 +28,7 @@ import java.util.concurrent.TimeUnit
 object LogUploadManager {
 
     private const val TAG = "LogUpload"
+    const val DEFAULT_WINDOW_MINUTES = 5
     private val client = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
         .writeTimeout(60, TimeUnit.SECONDS)
@@ -36,41 +37,37 @@ object LogUploadManager {
 
     data class UploadResult(val success: Boolean, val message: String)
 
-    /** 打包当前日志 + 设备信息为单个 txt 文件 */
-    suspend fun prepareExportFile(context: Context): File = withContext(Dispatchers.IO) {
+    /** 打包最近 [windowMinutes] 分钟日志 + 设备信息为单个 txt 文件 */
+    suspend fun prepareExportFile(context: Context, windowMinutes: Int = DEFAULT_WINDOW_MINUTES): File = withContext(Dispatchers.IO) {
         val dir = File(context.cacheDir, "log_export").apply { mkdirs() }
         val out = File(dir, "clawnode-log-${System.currentTimeMillis()}.txt")
 
-        val logFile = ClawLog.logFile()
         val header = buildString {
             appendLine("=== ClawNode Log Export ===")
             appendLine("version=${BuildConfig.VERSION_NAME}(${BuildConfig.VERSION_CODE})")
             appendLine("model=${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
             appendLine("android=${android.os.Build.VERSION.RELEASE} sdk=${android.os.Build.VERSION.SDK_INT}")
             appendLine("sn=${ConfigManager.get(context).defaultNodeSn}")
+            appendLine("window_minutes=$windowMinutes")
             appendLine("time=${System.currentTimeMillis()}")
             appendLine("===========================")
             appendLine()
         }
         out.writeText(header)
-        if (logFile != null && logFile.exists()) {
-            logFile.inputStream().use { input -> out.appendBytes(input.readBytes()) }
-        } else {
-            out.appendText("(no local log file yet)\n")
-        }
-        ClawLog.bp(TAG, "export_ready", "path=${out.absolutePath} size=${out.length()}")
+        out.appendText(ClawLog.collectRecentMinutes(windowMinutes))
+        ClawLog.bp(TAG, "export_ready", "path=${out.absolutePath} size=${out.length()} windowMin=$windowMinutes")
         out
     }
 
     /** 上传到网关；失败时可改用 [shareLogFile] */
-    suspend fun upload(context: Context, settings: NodeSettings): UploadResult =
+    suspend fun upload(context: Context, settings: NodeSettings, windowMinutes: Int = DEFAULT_WINDOW_MINUTES): UploadResult =
         withContext(Dispatchers.IO) {
             val wsUrl = settings.wsUrl
             if (!settings.isConnectable) {
                 return@withContext UploadResult(false, "请先配置有效的 WebSocket URL")
             }
             val uploadUrl = deriveUploadUrl(wsUrl)
-            val file = prepareExportFile(context)
+            val file = prepareExportFile(context, windowMinutes)
 
             ClawLog.bp(TAG, "upload_start", "url=$uploadUrl")
 
@@ -112,9 +109,9 @@ object LogUploadManager {
             }
         }
 
-    suspend fun uploadWithCurrentSettings(context: Context): UploadResult {
+    suspend fun uploadWithCurrentSettings(context: Context, windowMinutes: Int = DEFAULT_WINDOW_MINUTES): UploadResult {
         val settings = ConfigManager.get(context).settings.first()
-        return upload(context, settings)
+        return upload(context, settings, windowMinutes)
     }
 
     fun shareLogFile(context: Context, file: File) {

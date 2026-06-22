@@ -57,6 +57,13 @@ class ConfigManager private constructor(context: Context) {
         }
     }
 
+    /** mDNS 刷新网关 IP 时仅更新 ws_url，保留 token / gatewayId */
+    suspend fun saveDiscoveredUrl(wsUrl: String) {
+        appContext.configDataStore.edit { prefs ->
+            prefs[KEY_WS_URL] = wsUrl.trim()
+        }
+    }
+
     suspend fun savePairing(
         wsUrl: String,
         authToken: String,

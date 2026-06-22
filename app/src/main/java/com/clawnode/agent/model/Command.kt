@@ -31,7 +31,9 @@ data class Command(
         // STOP_APP / CLOSE_APP 的目标包名
         @SerializedName("package") val packageName: String? = null,
         // OPEN_APP 可选 Activity 全类名
-        @SerializedName("activity") val activity: String? = null
+        @SerializedName("activity") val activity: String? = null,
+        /** EXPORT_LOGS：最近 N 分钟，默认 5 */
+        @SerializedName("minutes") val minutes: Int? = null
     )
 
     companion object ActionType {

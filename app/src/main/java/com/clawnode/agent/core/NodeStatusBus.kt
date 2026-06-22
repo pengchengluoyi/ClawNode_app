@@ -15,11 +15,21 @@ object NodeStatusBus {
     private val _connection = MutableStateFlow<ConnectionState>(ConnectionState.Idle)
     val connection: StateFlow<ConnectionState> = _connection.asStateFlow()
 
+    /** MainActivity 手动「发现网关」时为 true，WsManager 暂停后台重连避免状态冲突 */
+    @Volatile
+    var manualDiscoveryActive: Boolean = false
+        private set
+
+    fun setManualDiscoveryActive(active: Boolean) {
+        manualDiscoveryActive = active
+    }
+
     fun publish(state: ConnectionState) {
         _connection.value = state
     }
 
     fun reset() {
+        manualDiscoveryActive = false
         _connection.value = ConnectionState.Idle
     }
 }

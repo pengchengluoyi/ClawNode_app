@@ -37,10 +37,12 @@ import kotlin.math.pow
  */
 class WsManager(
     private val scope: CoroutineScope,
-    /** 局域网 mDNS 发现：返回解析后的 ws:// URL，失败返回 null */
-    private val discoverServer: (suspend () -> String?)? = null,
+    /** 局域网 mDNS 发现：按 pairedGatewayId 匹配网关，失败返回 null */
+    private val discoverServer: (suspend (pairedGatewayId: String) -> String?)? = null,
     /** 服务端下发 PAIR_CONFIG 时持久化凭证 */
     private val onPairConfig: (suspend (wsUrl: String, authToken: String, gatewayId: String) -> Unit)? = null,
+    /** mDNS 刷新到的新 ws URL 持久化 */
+    private val onUrlDiscovered: (suspend (wsUrl: String) -> Unit)? = null,
     /** 服务端解绑时清除凭证 */
     private val onUnpair: (suspend () -> Unit)? = null,
     private val gson: Gson = Gson()
@@ -219,6 +221,12 @@ class WsManager(
     private suspend fun connectLoop() {
         ClawLog.bp(TAG, "connect_loop", "entered")
         while (scope.isActive && !manualClosed && !authHalted && !unpairedHalt) {
+            if (NodeStatusBus.manualDiscoveryActive) {
+                setState(ConnectionState.Discovering)
+                delay(300)
+                continue
+            }
+
             val connectUrl = resolveConnectUrl()
             if (connectUrl == null) {
                 reconnectAttempt += 1
@@ -227,7 +235,7 @@ class WsManager(
                         NodeConfig.RECONNECT_FACTOR.pow(reconnectAttempt - 1)).toLong(),
                     NodeConfig.RECONNECT_MAX_DELAY_MS
                 )
-                setState(ConnectionState.Reconnecting(reconnectAttempt, delayMs))
+                setState(ConnectionState.Discovering)
                 ClawLog.w(TAG, "discovery_retry", "no gateway found attempt=$reconnectAttempt delayMs=$delayMs")
                 delay(delayMs)
                 continue
@@ -235,12 +243,18 @@ class WsManager(
 
             val closedReason = openOnce(connectUrl)
 
-            if (manualClosed || authHalted) break
+            if (manualClosed || authHalted || closedReason.startsWith("auth:")) break
 
             reconnectAttempt += 1
 
+            var urlUpdated = false
             if (reconnectAttempt >= NodeConfig.DISCOVERY_AFTER_FAILURES) {
-                tryAutoDiscovery()
+                urlUpdated = tryAutoDiscovery()
+            }
+
+            if (urlUpdated) {
+                reconnectAttempt = 0
+                continue
             }
 
             val backoff = (NodeConfig.RECONNECT_BASE_DELAY_MS *
@@ -249,8 +263,13 @@ class WsManager(
             val jitter = (reconnectAttempt * 137L) % NodeConfig.RECONNECT_JITTER_MS
             val delayMs = capped + jitter
 
-            setState(ConnectionState.Reconnecting(reconnectAttempt, delayMs))
-            ClawLog.w(TAG, "reconnect_scheduled", "reason=$closedReason attempt=$reconnectAttempt delayMs=$delayMs")
+            if (reconnectAttempt >= NodeConfig.DISCOVERY_AFTER_FAILURES && discoverServer != null) {
+                setState(ConnectionState.Discovering)
+                ClawLog.w(TAG, "discovery_backoff", "reason=$closedReason attempt=$reconnectAttempt delayMs=$delayMs")
+            } else {
+                setState(ConnectionState.Reconnecting(reconnectAttempt, delayMs))
+                ClawLog.w(TAG, "reconnect_scheduled", "reason=$closedReason attempt=$reconnectAttempt delayMs=$delayMs")
+            }
             delay(delayMs)
         }
         ClawLog.bp(TAG, "connect_loop", "exited manualClosed=$manualClosed authHalted=$authHalted")
@@ -263,14 +282,15 @@ class WsManager(
         return runDiscovery("auto_mode")
     }
 
-    private suspend fun tryAutoDiscovery() {
-        if (discoverServer == null) return
-        val discovered = runDiscovery("connect_failure") ?: return
-        if (discovered.isNotBlank() && discovered != settings.wsUrl) {
-            settings = settings.copy(wsUrl = discovered)
-            reconnectAttempt = 0
-            ClawLog.bp(TAG, "discovery_applied", "newUrl=$discovered")
-        }
+    private suspend fun tryAutoDiscovery(): Boolean {
+        if (discoverServer == null) return false
+        val discovered = runDiscovery("connect_failure") ?: return false
+        if (discovered.isBlank() || discovered == settings.wsUrl) return false
+        settings = settings.copy(wsUrl = discovered)
+        reconnectAttempt = 0
+        onUrlDiscovered?.invoke(discovered)
+        ClawLog.bp(TAG, "discovery_applied", "newUrl=$discovered")
+        return true
     }
 
     private suspend fun runDiscovery(reason: String): String? {
@@ -279,8 +299,8 @@ class WsManager(
             return null
         }
         setState(ConnectionState.Discovering)
-        ClawLog.bp(TAG, "discovery_start", "reason=$reason")
-        val discovered = discoverServer.invoke()
+        ClawLog.bp(TAG, "discovery_start", "reason=$reason paired=${settings.pairedGatewayId}")
+        val discovered = discoverServer.invoke(settings.pairedGatewayId)
         if (discovered.isNullOrBlank()) {
             ClawLog.w(TAG, "discovery_miss", "reason=$reason")
         }
@@ -379,6 +399,11 @@ class WsManager(
                 clearIfActive(ws)
                 stopHeartbeat()
                 ClawLog.e(TAG, "ws_failure", "http=${response?.code} msg=${t.message}", t)
+                if (!authHalted && isAuthFailure(t, response)) {
+                    if (!done.isCompleted) done.complete("auth: ${t.message}")
+                    handleAuthFailed(t.message ?: "HTTP ${response?.code}")
+                    return
+                }
                 if (!authHalted) setState(ConnectionState.Disconnected(t.message ?: "failure"))
                 if (!done.isCompleted) done.complete("failure: ${t.message}")
             }
@@ -538,6 +563,14 @@ class WsManager(
         connectJob?.cancel()
         connectJob = null
         setState(ConnectionState.AuthFailed(reason))
+    }
+
+    private fun isAuthFailure(t: Throwable, response: Response?): Boolean {
+        val code = response?.code
+        if (code == 401 || code == 403) return true
+        val msg = t.message?.lowercase().orEmpty()
+        return msg.contains("403") || msg.contains("401") ||
+            msg.contains("policy violation") || msg.contains("1008")
     }
 
     companion object {

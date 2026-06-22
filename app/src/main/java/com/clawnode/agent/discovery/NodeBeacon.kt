@@ -24,6 +24,9 @@ object NodeBeacon {
             serviceName = instance
             serviceType = SERVICE_TYPE
             port = PLACEHOLDER_PORT
+            setAttribute("sn", sn)
+            setAttribute("model", model)
+            setAttribute("role", "node")
         }
         registrationListener = object : NsdManager.RegistrationListener {
             override fun onServiceRegistered(info: NsdServiceInfo) {

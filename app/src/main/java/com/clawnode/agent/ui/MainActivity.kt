@@ -134,6 +134,8 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             binding.btnDiscover.isEnabled = false
             binding.btnDiscover.text = "搜索网关…"
+            NodeStatusBus.setManualDiscoveryActive(true)
+            var holdUntilPickerDone = false
             try {
                 val token = binding.etAuthToken.text?.toString()?.trim().orEmpty()
                 if (token.isBlank()) {
@@ -149,6 +151,7 @@ class MainActivity : AppCompatActivity() {
                         .show()
                     return@launch
                 }
+                holdUntilPickerDone = true
                 showGatewayPicker(gateways, token)
             } catch (e: Exception) {
                 ClawLog.e(TAG, "discover_fail", "", e)
@@ -156,8 +159,13 @@ class MainActivity : AppCompatActivity() {
             } finally {
                 binding.btnDiscover.isEnabled = true
                 binding.btnDiscover.text = "发现网关并配对"
+                if (!holdUntilPickerDone) endManualDiscovery()
             }
         }
+    }
+
+    private fun endManualDiscovery() {
+        NodeStatusBus.setManualDiscoveryActive(false)
     }
 
     private fun showGatewayPicker(gateways: List<ServerDiscovery.Gateway>, token: String) {
@@ -185,7 +193,8 @@ class MainActivity : AppCompatActivity() {
         AlertDialog.Builder(this)
             .setTitle("选择网关（${gateways.size}）")
             .setView(listView)
-            .setNegativeButton("取消", null)
+            .setNegativeButton("取消") { _, _ -> endManualDiscovery() }
+            .setOnCancelListener { endManualDiscovery() }
             .setPositiveButton("确认连接") { _, _ ->
                 val idx = listView.checkedItemPosition.takeIf { it >= 0 } ?: 0
                 val picked = gateways[idx]
@@ -224,6 +233,7 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             } finally {
+                endManualDiscovery()
                 binding.btnDiscover.isEnabled = true
                 binding.btnDiscover.text = "发现网关并配对"
             }

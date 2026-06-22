@@ -34,6 +34,34 @@ object ClawLog {
 
     fun logFile(): File? = logFile
 
+    /** 读取最近 [windowMinutes] 分钟内的日志行（含滚动备份）。 */
+    fun collectRecentMinutes(windowMinutes: Int): String {
+        val minutes = windowMinutes.coerceIn(1, 24 * 60)
+        val cutoff = System.currentTimeMillis() - minutes * 60_000L
+        val files = listOfNotNull(
+            logFile?.takeIf { it.exists() },
+            logFile?.parentFile?.let { File(it, "clawnode.log.bak") }?.takeIf { it.exists() },
+        )
+        if (files.isEmpty()) return "(no local log file yet)\n"
+
+        val kept = linkedSetOf<String>()
+        for (file in files) {
+            file.useLines { lines ->
+                for (line in lines) {
+                    if (line.isBlank()) continue
+                    val ts = parseLineTime(line) ?: continue
+                    if (ts >= cutoff) kept.add(line)
+                }
+            }
+        }
+        return if (kept.isEmpty()) "(no log lines in last ${minutes}m)\n" else kept.joinToString("\n", postfix = "\n")
+    }
+
+    private fun parseLineTime(line: String): Long? {
+        if (line.length < 23) return null
+        return runCatching { timeFmt.parse(line.substring(0, 23))?.time }.getOrNull()
+    }
+
     fun bp(tag: String, checkpoint: String, detail: String = "") {
         write("D", tag, checkpoint, detail, null)
     }
