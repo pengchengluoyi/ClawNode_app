@@ -12,6 +12,7 @@ import com.clawnode.agent.core.NodeStatusBus
 import com.clawnode.agent.service.NodeForegroundService
 import com.clawnode.agent.system.AppController
 import com.clawnode.agent.system.WakeUpActivity
+import com.clawnode.agent.vision.MediaProjectionHolder
 import com.clawnode.agent.vision.StreamBridge
 import com.clawnode.agent.vision.VisionManager
 import com.clawnode.agent.ws.WsManager
