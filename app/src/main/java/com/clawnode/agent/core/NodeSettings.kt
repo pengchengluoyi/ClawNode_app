@@ -8,11 +8,26 @@ data class NodeSettings(
     val authToken: String,
     val nodeSn: String
 ) {
-    /** 是否具备发起连接的最低条件：URL 必须是合法的 ws/wss 地址 */
+    /** 使用 mDNS 自动发现，无需手填 IP */
+    val usesAutoDiscovery: Boolean
+        get() = wsUrl.isBlank() ||
+            wsUrl.equals("auto", ignoreCase = true) ||
+            wsUrl.equals(AUTO_DISCOVERY_URL, ignoreCase = true)
+
+    /** 是否具备发起连接的最低条件 */
     val isConnectable: Boolean
-        get() = wsUrl.startsWith("ws://") || wsUrl.startsWith("wss://")
+        get() = usesAutoDiscovery || wsUrl.startsWith("ws://") || wsUrl.startsWith("wss://")
 
     companion object {
+        const val AUTO_DISCOVERY_URL = "ws://auto"
+
         val EMPTY = NodeSettings(wsUrl = "", authToken = "", nodeSn = "")
+
+        fun isValidUrlInput(raw: String): Boolean {
+            val url = raw.trim()
+            if (url.isBlank() || url.equals("auto", ignoreCase = true)) return true
+            if (url.equals(AUTO_DISCOVERY_URL, ignoreCase = true)) return true
+            return url.startsWith("ws://") || url.startsWith("wss://")
+        }
     }
 }

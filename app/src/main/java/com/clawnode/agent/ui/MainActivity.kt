@@ -17,7 +17,8 @@ import com.clawnode.agent.BuildConfig
 import com.clawnode.agent.core.ClawLog
 import com.clawnode.agent.core.ConfigManager
 import com.clawnode.agent.core.ConnectionState
-import com.clawnode.agent.core.NodeStatusBus
+import com.clawnode.agent.core.NodeSettings
+import com.clawnode.agent.discovery.ServerDiscovery
 import com.clawnode.agent.databinding.ActivityMainBinding
 import com.clawnode.agent.log.LogUploadManager
 import com.clawnode.agent.system.MediaProjectionRequestActivity
@@ -68,16 +69,21 @@ class MainActivity : AppCompatActivity() {
         binding.btnSaveConfig.setOnClickListener {
             val url = binding.etWsUrl.text?.toString()?.trim().orEmpty()
             val token = binding.etAuthToken.text?.toString()?.trim().orEmpty()
-            if (!(url.startsWith("ws://") || url.startsWith("wss://"))) {
-                toast("URL 必须以 ws:// 或 wss:// 开头")
+            if (!NodeSettings.isValidUrlInput(url)) {
+                toast("URL 须为 ws://、wss://、auto 或 ws://auto")
                 return@setOnClickListener
             }
             lifecycleScope.launch {
-                config.save(url, token)
-                ClawLog.bp(TAG, "config_saved", "url=$url")
+                val normalizedUrl = when {
+                    url.isBlank() || url.equals("auto", ignoreCase = true) -> NodeSettings.AUTO_DISCOVERY_URL
+                    else -> url
+                }
+                config.save(normalizedUrl, token)
+                ClawLog.bp(TAG, "config_saved", "url=$normalizedUrl")
                 toast("已保存，连接将自动更新")
             }
         }
+        binding.btnDiscover.setOnClickListener { discoverGateway() }
         binding.btnRestricted.setOnClickListener { showRestrictedSettingsGuide() }
         binding.btnAccessibility.setOnClickListener {
             if (!SystemController.isRestrictedSettingsAllowed(this)) {
@@ -106,6 +112,57 @@ class MainActivity : AppCompatActivity() {
         binding.btnCheckUpdate.setOnClickListener { checkUpdate(manual = true) }
         binding.btnWake.setOnClickListener {
             SystemController.wakeUpScreen(this)
+        }
+    }
+
+    private fun discoverGateway() {
+        lifecycleScope.launch {
+            binding.btnDiscover.isEnabled = false
+            binding.btnDiscover.text = "搜索并配对中…"
+            try {
+                val token = binding.etAuthToken.text?.toString()?.trim().orEmpty()
+                if (token.isBlank()) {
+                    toast("请先填写 Auth Token，再搜索配对")
+                    return@launch
+                }
+                val nodeSn = config.settings.first().nodeSn
+                val paired = ServerDiscovery.pairByToken(
+                    context = this@MainActivity,
+                    token = token,
+                    nodeSn = nodeSn
+                )
+                if (paired == null) {
+                    val seen = ServerDiscovery.findAll(this@MainActivity)
+                    val hint = if (seen.isEmpty()) {
+                        "未发现 miniorange-* 网关。\n请确认手机与电脑同一 WiFi，且 MiniOrangeServer 已启动。"
+                    } else {
+                        "发现 ${seen.size} 台网关，但 Token 均不匹配：\n" +
+                            seen.joinToString("\n") { "• ${it.serviceName} → ${it.wsUrl}" }
+                    }
+                    AlertDialog.Builder(this@MainActivity)
+                        .setTitle("配对失败")
+                        .setMessage(hint)
+                        .setPositiveButton("确定", null)
+                        .show()
+                    return@launch
+                }
+                applyDiscoveredGateway(paired)
+            } catch (e: Exception) {
+                ClawLog.e(TAG, "discover_fail", "", e)
+                toast("搜索失败：${e.message}")
+            } finally {
+                binding.btnDiscover.isEnabled = true
+                binding.btnDiscover.text = "搜索局域网并 Token 配对"
+            }
+        }
+    }
+
+    private fun applyDiscoveredGateway(result: ServerDiscovery.Result) {
+        binding.etWsUrl.setText(result.wsUrl)
+        val token = binding.etAuthToken.text?.toString()?.trim().orEmpty()
+        lifecycleScope.launch {
+            config.save(result.wsUrl, token)
+            toast("已配对：${result.serviceName} → ${result.wsUrl}")
         }
     }
 
@@ -274,7 +331,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun renderConnection(state: ConnectionState) {
         binding.tvConnState.text = when (state) {
-            is ConnectionState.Idle -> "⚪ 未连接（请确认无障碍已开启且已填写有效 URL）"
+            is ConnectionState.Idle -> "⚪ 未连接（请确认无障碍已开启且已填写 Token）"
+            is ConnectionState.Discovering -> "🔍 扫描 miniorange-* 并用 Token 配对…"
             is ConnectionState.Connecting -> "🟡 连接中…"
             is ConnectionState.Connected -> "🟡 已连接，鉴权中…"
             is ConnectionState.Authenticated -> "🟢 已连接且已鉴权"

@@ -58,8 +58,8 @@ object SystemController {
             ClawLog.bp(TAG, "restricted_check", "mode=$mode allowed=$allowed api=${Build.VERSION.SDK_INT}")
             allowed
         }.getOrElse { e ->
-            // 部分 ROM（如 MIUI）对未知 op 会抛异常，导致 MainActivity 闪退
-            ClawLog.e(TAG, "restricted_check_fail", "fallback=true", e)
+            // 部分 ROM（如 MIUI）对未知 op 会抛 SecurityException，视为已允许
+            ClawLog.w(TAG, "restricted_check_fail", "fallback=true msg=${e.message}")
             true
         }
     }

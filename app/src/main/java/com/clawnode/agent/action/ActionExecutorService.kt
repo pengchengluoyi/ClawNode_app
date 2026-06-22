@@ -18,6 +18,7 @@ import com.clawnode.agent.ws.WsManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.Dispatchers
@@ -48,7 +49,21 @@ class ActionExecutorService : AccessibilityService() {
 
         gestureController = GestureController(this)
         appController = AppController(applicationContext, this)
-        wsManager = WsManager(scope)
+        val configManager = ConfigManager.get(applicationContext)
+        wsManager = WsManager(scope, discoverServer = {
+            val current = configManager.settings.first()
+            if (current.authToken.isBlank()) {
+                ClawLog.w(TAG, "discovery_skip", "token empty")
+                return@WsManager null
+            }
+            val paired = com.clawnode.agent.discovery.ServerDiscovery.pairByToken(
+                context = applicationContext,
+                token = current.authToken,
+                nodeSn = current.nodeSn
+            ) ?: return@WsManager null
+            configManager.save(paired.wsUrl, current.authToken)
+            paired.wsUrl
+        })
         wsManager.setDeviceMeta(buildDeviceMeta())
         StreamBridge.wsRef = wsManager
         visionManager = VisionManager(

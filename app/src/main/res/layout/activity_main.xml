@@ -67,9 +67,23 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="4dp"
-            android:hint="ws://192.168.x.x:8080/node"
+            android:hint="ws://auto（Token 自动配对）"
             android:inputType="textUri"
             android:maxLines="1" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="留空或 ws://auto：扫描 miniorange-*.local 并用 Token 配对"
+            android:textSize="12sp" />
+
+        <Button
+            android:id="@+id/btnDiscover"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="搜索局域网并 Token 配对" />
 
         <TextView
             android:layout_width="match_parent"

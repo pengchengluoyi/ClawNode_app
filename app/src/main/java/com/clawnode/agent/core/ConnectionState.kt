@@ -5,6 +5,9 @@ sealed interface ConnectionState {
     data object Idle : ConnectionState
     data object Connecting : ConnectionState
 
+    /** 正在通过 mDNS 发现局域网网关 */
+    data object Discovering : ConnectionState
+
     /** TCP/WS 已连接，但尚未通过网关鉴权 */
     data object Connected : ConnectionState
 

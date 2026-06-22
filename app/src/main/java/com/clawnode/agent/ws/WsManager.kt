@@ -37,6 +37,8 @@ import kotlin.math.pow
  */
 class WsManager(
     private val scope: CoroutineScope,
+    /** 局域网 mDNS 发现：返回解析后的 ws:// URL，失败返回 null */
+    private val discoverServer: (suspend () -> String?)? = null,
     private val gson: Gson = Gson()
 ) {
     private val client: OkHttpClient = OkHttpClient.Builder()
@@ -60,6 +62,10 @@ class WsManager(
 
     @Volatile
     private var deviceMeta: DeviceMeta = DeviceMeta("unknown", "Android", "0x0")
+
+    /** 每次 connect / stop / restart 递增，用于忽略已 supersede 的 OkHttp 回调。 */
+    @Volatile
+    private var connectionEpoch = 0L
 
     fun setDeviceMeta(meta: DeviceMeta) {
         deviceMeta = meta
@@ -150,16 +156,22 @@ class WsManager(
     }
 
     private fun stopInternal(resetAuthHalt: Boolean) {
-        ClawLog.bp(TAG, "stop", "manualClosed=true resetAuth=$resetAuthHalt")
+        ClawLog.bp(TAG, "stop", "manualClosed=true resetAuth=$resetAuthHalt epoch=${connectionEpoch + 1}")
         manualClosed = true
+        invalidateInFlightConnections("client stop")
         stopHeartbeat()
         connectJob?.cancel()
         connectJob = null
-        webSocket?.close(NORMAL_CLOSURE, "client stop")
-        webSocket = null
         reconnectAttempt = 0
         if (resetAuthHalt) authHalted = false
         setState(ConnectionState.Idle)
+    }
+
+    /** 作废所有进行中的连接尝试，避免旧 openOnce 的 onFailure 清空新 webSocket。 */
+    private fun invalidateInFlightConnections(reason: String) {
+        connectionEpoch++
+        webSocket?.close(NORMAL_CLOSURE, reason)
+        webSocket = null
     }
 
     fun send(response: NodeResponse): Boolean = sendChecked(response)
@@ -194,11 +206,30 @@ class WsManager(
     private suspend fun connectLoop() {
         ClawLog.bp(TAG, "connect_loop", "entered")
         while (scope.isActive && !manualClosed && !authHalted) {
-            val closedReason = openOnce()
+            val connectUrl = resolveConnectUrl()
+            if (connectUrl == null) {
+                reconnectAttempt += 1
+                val delayMs = min(
+                    (NodeConfig.RECONNECT_BASE_DELAY_MS *
+                        NodeConfig.RECONNECT_FACTOR.pow(reconnectAttempt - 1)).toLong(),
+                    NodeConfig.RECONNECT_MAX_DELAY_MS
+                )
+                setState(ConnectionState.Reconnecting(reconnectAttempt, delayMs))
+                ClawLog.w(TAG, "discovery_retry", "no gateway found attempt=$reconnectAttempt delayMs=$delayMs")
+                delay(delayMs)
+                continue
+            }
+
+            val closedReason = openOnce(connectUrl)
 
             if (manualClosed || authHalted) break
 
             reconnectAttempt += 1
+
+            if (reconnectAttempt >= NodeConfig.DISCOVERY_AFTER_FAILURES) {
+                tryAutoDiscovery()
+            }
+
             val backoff = (NodeConfig.RECONNECT_BASE_DELAY_MS *
                 NodeConfig.RECONNECT_FACTOR.pow(reconnectAttempt - 1)).toLong()
             val capped = min(backoff, NodeConfig.RECONNECT_MAX_DELAY_MS)
@@ -212,11 +243,43 @@ class WsManager(
         ClawLog.bp(TAG, "connect_loop", "exited manualClosed=$manualClosed authHalted=$authHalted")
     }
 
-    private suspend fun openOnce(): String {
+    /** ws://auto 或空 URL 时先 mDNS 发现；手动 URL 失败时由 [tryAutoDiscovery] 自愈 */
+    private suspend fun resolveConnectUrl(): String? {
+        val current = settings
+        if (!current.usesAutoDiscovery) return current.wsUrl
+        return runDiscovery("auto_mode")
+    }
+
+    private suspend fun tryAutoDiscovery() {
+        if (discoverServer == null || settings.usesAutoDiscovery) return
+        val discovered = runDiscovery("connect_failure")
+        if (!discovered.isNullOrBlank() && discovered != settings.wsUrl) {
+            settings = settings.copy(wsUrl = discovered)
+            reconnectAttempt = 0
+            ClawLog.bp(TAG, "discovery_applied", "newUrl=$discovered")
+        }
+    }
+
+    private suspend fun runDiscovery(reason: String): String? {
+        if (discoverServer == null) {
+            ClawLog.w(TAG, "discovery_skip", "no discoverServer callback reason=$reason")
+            return null
+        }
+        setState(ConnectionState.Discovering)
+        ClawLog.bp(TAG, "discovery_start", "reason=$reason")
+        val discovered = discoverServer.invoke()
+        if (discovered.isNullOrBlank()) {
+            ClawLog.w(TAG, "discovery_miss", "reason=$reason")
+        }
+        return discovered
+    }
+
+    private suspend fun openOnce(connectUrl: String): String {
+        val myEpoch = ++connectionEpoch
         setState(ConnectionState.Connecting)
         val current = settings
-        val url = buildUrlWithToken(current.wsUrl, current.authToken)
-        ClawLog.bp(TAG, "ws_open", "sn=${current.nodeSn} url=$url")
+        val url = buildUrlWithToken(connectUrl, current.authToken)
+        ClawLog.bp(TAG, "ws_open", "sn=${current.nodeSn} epoch=$myEpoch url=$url")
 
         val request = Request.Builder()
             .url(url)
@@ -231,11 +294,23 @@ class WsManager(
         val done = kotlinx.coroutines.CompletableDeferred<String>()
 
         val listener = object : WebSocketListener() {
+            private fun isStale(): Boolean = myEpoch != connectionEpoch
+
+            private fun clearIfActive(ws: WebSocket) {
+                if (webSocket === ws) webSocket = null
+            }
+
             override fun onOpen(ws: WebSocket, response: Response) {
+                if (isStale()) {
+                    ClawLog.w(TAG, "ws_open_stale", "epoch=$myEpoch current=$connectionEpoch url=$url")
+                    ws.close(NORMAL_CLOSURE, "stale connection")
+                    if (!done.isCompleted) done.complete("stale")
+                    return
+                }
                 webSocket = ws
                 reconnectAttempt = 0
                 setState(ConnectionState.Connected)
-                ClawLog.bp(TAG, "ws_open_ok", "code=${response.code} sn=${current.nodeSn}")
+                ClawLog.bp(TAG, "ws_open_ok", "code=${response.code} sn=${current.nodeSn} epoch=$myEpoch")
 
                 val register = RegisterFrame(
                     data = RegisterFrame.Data(
@@ -249,24 +324,32 @@ class WsManager(
                 val regOk = ws.send(regJson)
                 ClawLog.bp(TAG, "register_sent", "sn=${current.nodeSn} ok=$regOk")
 
-                startHeartbeat(current.nodeSn)
+                startHeartbeat(current.nodeSn, myEpoch)
             }
 
             override fun onMessage(ws: WebSocket, text: String) {
+                if (isStale() || webSocket !== ws) return
                 dispatchText(text)
             }
 
             override fun onMessage(ws: WebSocket, bytes: ByteString) {
+                if (isStale() || webSocket !== ws) return
                 dispatchText(bytes.utf8())
             }
 
             override fun onClosing(ws: WebSocket, code: Int, reason: String) {
+                if (isStale()) return
                 ClawLog.w(TAG, "ws_closing", "code=$code reason=$reason")
                 ws.close(NORMAL_CLOSURE, null)
             }
 
             override fun onClosed(ws: WebSocket, code: Int, reason: String) {
-                webSocket = null
+                if (isStale()) {
+                    ClawLog.bp(TAG, "ws_closed_stale", "epoch=$myEpoch code=$code")
+                    if (!done.isCompleted) done.complete("stale")
+                    return
+                }
+                clearIfActive(ws)
                 stopHeartbeat()
                 ClawLog.w(TAG, "ws_closed", "code=$code reason=$reason")
                 if (!authHalted) setState(ConnectionState.Disconnected("closed[$code] $reason"))
@@ -274,7 +357,12 @@ class WsManager(
             }
 
             override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
-                webSocket = null
+                if (isStale()) {
+                    ClawLog.bp(TAG, "ws_failure_stale", "epoch=$myEpoch msg=${t.message}")
+                    if (!done.isCompleted) done.complete("stale")
+                    return
+                }
+                clearIfActive(ws)
                 stopHeartbeat()
                 ClawLog.e(TAG, "ws_failure", "http=${response?.code} msg=${t.message}", t)
                 if (!authHalted) setState(ConnectionState.Disconnected(t.message ?: "failure"))
@@ -316,6 +404,10 @@ class WsManager(
             ClawLog.w(TAG, "rx_drop", "malformed: $preview")
             return
         }
+        if (webSocket == null) {
+            ClawLog.w(TAG, "rx_cmd_no_ws", "trace=${cmd.traceId} action=${cmd.actionType}")
+            return
+        }
         val emitted = _incomingCommands.tryEmit(cmd)
         ClawLog.bp(TAG, "cmd_emit", "trace=${cmd.traceId} action=${cmd.actionType} ok=$emitted")
         if (!emitted) {
@@ -325,11 +417,11 @@ class WsManager(
 
     private data class ServerAck(val action: String? = null, val code: Int? = null)
 
-    private fun startHeartbeat(sn: String) {
+    private fun startHeartbeat(sn: String, epoch: Long) {
         stopHeartbeat()
         heartbeatSeq = 0
         heartbeatJob = scope.launch {
-            while (isActive) {
+            while (isActive && epoch == connectionEpoch) {
                 // 连接后立即发首包，避免服务端 60s 超时窗口内一直等不到 heartbeat
                 if (!sendHeartbeat(sn)) break
                 delay(NodeConfig.HEARTBEAT_INTERVAL_MS)
@@ -369,8 +461,7 @@ class WsManager(
         ClawLog.e(TAG, "auth_failed", reason)
         authHalted = true
         reconnectAttempt = 0
-        webSocket?.close(NORMAL_CLOSURE, "auth failed")
-        webSocket = null
+        invalidateInFlightConnections("auth failed")
         connectJob?.cancel()
         connectJob = null
         setState(ConnectionState.AuthFailed(reason))
