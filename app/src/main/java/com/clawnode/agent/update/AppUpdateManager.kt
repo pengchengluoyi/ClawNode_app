@@ -11,7 +11,6 @@ import android.provider.Settings
 import androidx.core.content.FileProvider
 import com.clawnode.agent.BuildConfig
 import com.clawnode.agent.core.ClawLog
-import com.clawnode.agent.ui.MainActivity
 import com.google.gson.Gson
 import com.google.gson.annotations.SerializedName
 import kotlinx.coroutines.Dispatchers
@@ -24,8 +23,8 @@ import java.util.concurrent.TimeUnit
 /**
  * GitHub Releases 检查、下载与安装。
  *
- * 安装使用 PackageInstaller Session（比 ACTION_VIEW 更稳定）。
- * 注意：普通 Android 仍需用户点一次系统「安装」确认，无法完全静默（需 Device Owner/root）。
+ * 优先读取仓库 [latest.json]（无 API 限流），其次解析 releases/latest 重定向，
+ * 最后才回退 GitHub REST API。
  */
 object AppUpdateManager {
 
@@ -34,12 +33,21 @@ object AppUpdateManager {
     private const val GITHUB_REPO = "ClawNode_app"
     private const val API_URL =
         "https://api.github.com/repos/$GITHUB_OWNER/$GITHUB_REPO/releases/latest"
+    private const val MANIFEST_URL =
+        "https://raw.githubusercontent.com/$GITHUB_OWNER/$GITHUB_REPO/main/latest.json"
+    private const val RELEASES_LATEST =
+        "https://github.com/$GITHUB_OWNER/$GITHUB_REPO/releases/latest"
 
     const val ACTION_INSTALL_RESULT = "com.clawnode.agent.INSTALL_RESULT"
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(180, TimeUnit.SECONDS)
+        .build()
+
+    private val noRedirectClient = client.newBuilder()
+        .followRedirects(false)
+        .followSslRedirects(false)
         .build()
 
     private val gson = Gson()
@@ -51,6 +59,13 @@ object AppUpdateManager {
         val releaseNotes: String,
         val downloadUrl: String?,
         val assetName: String?
+    )
+
+    private data class LatestManifest(
+        @SerializedName("version") val version: String?,
+        @SerializedName("tag") val tag: String?,
+        @SerializedName("apk") val apk: String?,
+        @SerializedName("download_url") val downloadUrl: String?
     )
 
     private data class GitHubRelease(
@@ -68,35 +83,124 @@ object AppUpdateManager {
         ClawLog.bp(TAG, "check_start", "current=${BuildConfig.VERSION_NAME}(${BuildConfig.VERSION_CODE})")
         val current = BuildConfig.VERSION_NAME
 
+        val resolved = fetchFromManifest()
+            ?: fetchFromLatestRedirect()
+            ?: fetchFromGitHubApi()
+
+        val hasUpdate = compareVersions(resolved.version, current) > 0
+        ClawLog.bp(
+            TAG,
+            "check_result",
+            "latest=${resolved.version} hasUpdate=$hasUpdate source=${resolved.source} asset=${resolved.assetName}"
+        )
+
+        UpdateInfo(
+            hasUpdate = hasUpdate,
+            latestVersion = resolved.version,
+            currentVersion = current,
+            releaseNotes = resolved.notes,
+            downloadUrl = resolved.downloadUrl,
+            assetName = resolved.assetName
+        )
+    }
+
+    private data class ResolvedRelease(
+        val version: String,
+        val downloadUrl: String?,
+        val assetName: String?,
+        val notes: String,
+        val source: String
+    )
+
+    private fun fetchFromManifest(): ResolvedRelease? {
+        return runCatching {
+            val request = Request.Builder()
+                .url(MANIFEST_URL)
+                .header("User-Agent", userAgent())
+                .build()
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return null
+                val manifest = gson.fromJson(response.body?.string(), LatestManifest::class.java)
+                val version = manifest.version?.trim().orEmpty()
+                if (version.isBlank()) return null
+                val tag = manifest.tag?.trim().takeUnless { it.isNullOrBlank() } ?: "v$version"
+                val apk = manifest.apk?.trim().takeUnless { it.isNullOrBlank() }
+                    ?: "ClawNode-$version.apk"
+                val url = manifest.downloadUrl?.trim().takeUnless { it.isNullOrBlank() }
+                    ?: buildDownloadUrl(tag, apk)
+                ResolvedRelease(version, url, apk, "", "manifest")
+            }
+        }.getOrElse { e ->
+            ClawLog.w(TAG, "manifest_miss", e.message ?: "")
+            null
+        }
+    }
+
+    private fun fetchFromLatestRedirect(): ResolvedRelease? {
+        return runCatching {
+            val request = Request.Builder()
+                .url(RELEASES_LATEST)
+                .head()
+                .header("User-Agent", userAgent())
+                .build()
+            noRedirectClient.newCall(request).execute().use { response ->
+                if (response.code !in 300..399) {
+                    throw IllegalStateException("releases/latest HTTP ${response.code}")
+                }
+                val location = response.header("Location").orEmpty()
+                val tag = location.substringAfterLast("/").trim()
+                if (!tag.startsWith("v")) {
+                    throw IllegalStateException("unexpected redirect: $location")
+                }
+                val version = tag.removePrefix("v")
+                val apk = "ClawNode-$version.apk"
+                ResolvedRelease(
+                    version = version,
+                    downloadUrl = buildDownloadUrl(tag, apk),
+                    assetName = apk,
+                    notes = "",
+                    source = "redirect"
+                )
+            }
+        }.getOrElse { e ->
+            ClawLog.w(TAG, "redirect_miss", e.message ?: "")
+            null
+        }
+    }
+
+    private fun fetchFromGitHubApi(): ResolvedRelease {
         val request = Request.Builder()
             .url(API_URL)
             .header("Accept", "application/vnd.github+json")
-            .header("User-Agent", "ClawNode-Android/${BuildConfig.VERSION_NAME}")
+            .header("User-Agent", userAgent())
             .build()
 
         client.newCall(request).execute().use { response ->
+            if (response.code == 403) {
+                throw IllegalStateException("GitHub API 访问频率受限(403)，请稍后再试或使用浏览器下载")
+            }
             if (!response.isSuccessful) {
                 throw IllegalStateException("GitHub API HTTP ${response.code}")
             }
             val release = gson.fromJson(response.body?.string(), GitHubRelease::class.java)
-            val tag = release.tagName?.removePrefix("v").orEmpty()
-            if (tag.isBlank()) throw IllegalStateException("release tag_name empty")
-
+            val tag = release.tagName?.trim().orEmpty()
+            val version = tag.removePrefix("v")
+            if (version.isBlank()) throw IllegalStateException("release tag_name empty")
             val apkAsset = release.assets?.firstOrNull { it.name?.endsWith(".apk") == true }
-            val hasUpdate = compareVersions(tag, current) > 0
-
-            ClawLog.bp(TAG, "check_result", "latest=$tag hasUpdate=$hasUpdate asset=${apkAsset?.name}")
-
-            UpdateInfo(
-                hasUpdate = hasUpdate,
-                latestVersion = tag,
-                currentVersion = current,
-                releaseNotes = release.body.orEmpty(),
+            return ResolvedRelease(
+                version = version,
                 downloadUrl = apkAsset?.browserDownloadUrl,
-                assetName = apkAsset?.name
+                assetName = apkAsset?.name,
+                notes = release.body.orEmpty(),
+                source = "api"
             )
         }
     }
+
+    private fun buildDownloadUrl(tag: String, apkName: String): String =
+        "https://github.com/$GITHUB_OWNER/$GITHUB_REPO/releases/download/$tag/$apkName"
+
+    private fun userAgent(): String = "ClawNode-Android/${BuildConfig.VERSION_NAME}"
 
     /** 启动时静默检查：有更新且已有安装权限则后台下载并拉起系统安装 */
     suspend fun autoUpdateIfNeeded(context: Context): Boolean {
@@ -127,10 +231,13 @@ object AppUpdateManager {
 
             val request = Request.Builder()
                 .url(url)
-                .header("User-Agent", "ClawNode-Android/${BuildConfig.VERSION_NAME}")
+                .header("User-Agent", userAgent())
                 .build()
 
             client.newCall(request).execute().use { response ->
+                if (response.code == 403) {
+                    throw IllegalStateException("下载被拒绝(403)，请稍后重试")
+                }
                 if (!response.isSuccessful) {
                     throw IllegalStateException("download HTTP ${response.code}")
                 }
