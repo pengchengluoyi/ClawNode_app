@@ -103,17 +103,27 @@ class WsManager(
     @Volatile
     private var unpairedHalt = false
 
+    @Volatile
+    private var pairingLoopActive = false
+
     fun applySettings(newSettings: NodeSettings) {
         val old = settings
         settings = newSettings
 
-        if (newSettings.userUnpaired || !newSettings.isConnectable) {
-            unpairedHalt = newSettings.userUnpaired
-            ClawLog.w(TAG, "settings_unpaired", "halt reconnect userUnpaired=${newSettings.userUnpaired}")
+        if (newSettings.userUnpaired) {
+            unpairedHalt = false
+            ClawLog.bp(TAG, "pairing_mode", "start LAN pairing loop sn=${newSettings.nodeSn}")
             stopInternal(resetAuthHalt = false)
-            if (newSettings.userUnpaired) {
-                setState(ConnectionState.Unpaired)
-            }
+            manualClosed = false
+            setState(ConnectionState.Unpaired)
+            startPairingLoop()
+            return
+        }
+
+        if (!newSettings.isConnectable) {
+            unpairedHalt = false
+            ClawLog.w(TAG, "settings_not_connectable", "halt url=${newSettings.wsUrl}")
+            stopInternal(resetAuthHalt = false)
             return
         }
 
@@ -151,16 +161,59 @@ class WsManager(
             ClawLog.w(TAG, "start_blocked", "url not connectable")
             return
         }
-        if (connectJob?.isActive == true) {
+        if (connectJob?.isActive == true && !pairingLoopActive) {
             ClawLog.bp(TAG, "start_skip", "connect loop already running")
             return
         }
         manualClosed = false
+        pairingLoopActive = false
         connectJob = scope.launch { connectLoop() }
+    }
+
+    private fun startPairingLoop() {
+        if (connectJob?.isActive == true && pairingLoopActive) {
+            ClawLog.bp(TAG, "pairing_skip", "pairing loop already running")
+            return
+        }
+        manualClosed = false
+        pairingLoopActive = true
+        connectJob = scope.launch {
+            pairingConnectLoop()
+            pairingLoopActive = false
+        }
+    }
+
+    private suspend fun pairingConnectLoop() {
+        ClawLog.bp(TAG, "pairing_loop", "entered sn=${settings.nodeSn}")
+        var attempt = 0
+        while (scope.isActive && !manualClosed && settings.userUnpaired) {
+            if (NodeStatusBus.manualDiscoveryActive) {
+                setState(ConnectionState.Discovering)
+                delay(300)
+                continue
+            }
+            val connectUrl = runDiscovery("pairing_mode")
+            if (connectUrl.isNullOrBlank()) {
+                attempt++
+                val delayMs = min(5000L + attempt * 1000L, 15000L)
+                ClawLog.w(TAG, "pairing_wait_gateway", "attempt=$attempt delayMs=$delayMs")
+                setState(ConnectionState.Discovering)
+                delay(delayMs)
+                continue
+            }
+            attempt = 0
+            ClawLog.bp(TAG, "pairing_connect", "url=$connectUrl sn=${settings.nodeSn}")
+            val closedReason = openOnce(connectUrl)
+            ClawLog.bp(TAG, "pairing_session_end", "reason=$closedReason stillUnpaired=${settings.userUnpaired}")
+            if (!settings.userUnpaired || manualClosed) break
+            delay(3000)
+        }
+        ClawLog.bp(TAG, "pairing_loop", "exited")
     }
 
     private fun restart() {
         ClawLog.bp(TAG, "restart", "stop then start")
+        pairingLoopActive = false
         stopInternal(resetAuthHalt = false)
         manualClosed = false
         start()
