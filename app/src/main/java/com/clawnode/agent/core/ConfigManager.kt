@@ -64,6 +64,14 @@ class ConfigManager private constructor(context: Context) {
         }
     }
 
+    suspend fun clearPairing() {
+        appContext.configDataStore.edit { prefs ->
+            prefs[KEY_WS_URL] = NodeSettings.AUTO_DISCOVERY_URL
+            prefs[KEY_AUTH_TOKEN] = ""
+            prefs[KEY_PAIRED_GATEWAY_ID] = ""
+        }
+    }
+
     companion object {
         private val KEY_WS_URL = stringPreferencesKey("ws_url")
         private val KEY_AUTH_TOKEN = stringPreferencesKey("auth_token")

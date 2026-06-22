@@ -6,6 +6,7 @@ import com.clawnode.agent.model.NodeResponse
 import com.clawnode.agent.vision.VisionManager
 import com.clawnode.agent.ws.WsManager
 import kotlinx.coroutines.CoroutineScope
+import com.clawnode.agent.log.LogUploadManager
 import kotlinx.coroutines.launch
 
 /**
@@ -19,7 +20,10 @@ class CommandDispatcher(
     private val onWakeUp: () -> Unit,
     private val onKeyEvent: (String) -> Boolean,
     private val onLaunchApp: (String, String?) -> Pair<Boolean, String>,
-    private val onCloseApp: (String) -> Pair<Boolean, String>
+    private val onCloseApp: (String) -> Pair<Boolean, String>,
+    private val onKillApp: (String) -> Pair<Boolean, String>,
+    private val onClearAppCache: (String) -> Pair<Boolean, String>,
+    private val onExportLogs: suspend () -> Pair<Boolean, String>,
 ) {
 
     fun dispatch(cmd: Command) {
@@ -46,6 +50,9 @@ class CommandDispatcher(
             Command.KEY_EVENT -> handleKeyEvent(cmd)
             Command.OPEN_APP, Command.START_APP -> handleOpenApp(cmd)
             Command.CLOSE_APP, Command.STOP_APP -> handleCloseApp(cmd)
+            Command.KILL_APP -> handleKillApp(cmd)
+            Command.CLEAR_APP_CACHE -> handleClearCache(cmd)
+            Command.EXPORT_LOGS -> handleExportLogs(cmd)
             else -> ws.sendChecked(
                 NodeResponse.actionResult(cmd.traceId, false, "unknown action_type=${cmd.actionType}")
             )
@@ -73,6 +80,31 @@ class CommandDispatcher(
         val (ok, msg) = runCatching { onCloseApp(pkg) }.getOrElse {
             false to (it.message ?: "close error")
         }
+        ws.sendChecked(NodeResponse.actionResult(cmd.traceId, ok, msg))
+    }
+
+    private fun handleKillApp(cmd: Command) {
+        val pkg = cmd.payload?.packageName
+        if (pkg.isNullOrBlank()) {
+            ws.sendChecked(NodeResponse.actionResult(cmd.traceId, false, "KILL_APP requires package"))
+            return
+        }
+        val (ok, msg) = runCatching { onKillApp(pkg) }.getOrElse { false to (it.message ?: "kill error") }
+        ws.sendChecked(NodeResponse.actionResult(cmd.traceId, ok, msg))
+    }
+
+    private fun handleClearCache(cmd: Command) {
+        val pkg = cmd.payload?.packageName
+        if (pkg.isNullOrBlank()) {
+            ws.sendChecked(NodeResponse.actionResult(cmd.traceId, false, "CLEAR_APP_CACHE requires package"))
+            return
+        }
+        val (ok, msg) = runCatching { onClearAppCache(pkg) }.getOrElse { false to (it.message ?: "clear error") }
+        ws.sendChecked(NodeResponse.actionResult(cmd.traceId, ok, msg))
+    }
+
+    private suspend fun handleExportLogs(cmd: Command) {
+        val (ok, msg) = runCatching { onExportLogs() }.getOrElse { false to (it.message ?: "export error") }
         ws.sendChecked(NodeResponse.actionResult(cmd.traceId, ok, msg))
     }
 

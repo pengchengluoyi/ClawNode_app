@@ -6,7 +6,9 @@ import android.graphics.Bitmap
 import android.hardware.HardwareBuffer
 import android.view.Display
 import android.view.accessibility.AccessibilityEvent
+import com.clawnode.agent.BuildConfig
 import com.clawnode.agent.core.ClawLog
+import com.clawnode.agent.log.LogUploadManager
 import com.clawnode.agent.core.ConfigManager
 import com.clawnode.agent.core.NodeStatusBus
 import com.clawnode.agent.service.NodeForegroundService
@@ -52,22 +54,19 @@ class ActionExecutorService : AccessibilityService() {
         gestureController = GestureController(this)
         appController = AppController(applicationContext, this)
         val configManager = ConfigManager.get(applicationContext)
-        wsManager = WsManager(scope, discoverServer = {
-            val current = configManager.settings.first()
-            if (current.pairedGatewayId.isBlank()) {
-                ClawLog.w(TAG, "discovery_skip", "no paired gateway")
-                return@WsManager null
-            }
-            val gateways = com.clawnode.agent.discovery.ServerDiscovery.findGateways(applicationContext)
-            val matched = com.clawnode.agent.discovery.ServerDiscovery.matchPaired(
-                gateways,
-                current.pairedGatewayId
-            ) ?: return@WsManager null
-            if (matched.wsUrl != current.wsUrl) {
-                configManager.savePairing(matched.wsUrl, current.authToken, current.pairedGatewayId)
-            }
-            matched.wsUrl
-        })
+        wsManager = WsManager(
+            scope,
+            discoverServer = {
+                val gateways = com.clawnode.agent.discovery.ServerDiscovery.findGateways(applicationContext)
+                gateways.firstOrNull()?.wsUrl
+            },
+            onPairConfig = { wsUrl, authToken, gatewayId ->
+                configManager.savePairing(wsUrl, authToken, gatewayId)
+            },
+            onUnpair = {
+                configManager.clearPairing()
+            },
+        )
         wsManager.setDeviceMeta(buildDeviceMeta())
         val meta = buildDeviceMeta()
         com.clawnode.agent.discovery.NodeBeacon.start(
@@ -93,7 +92,18 @@ class ActionExecutorService : AccessibilityService() {
             },
             onCloseApp = { pkg ->
                 appController.closeApp(pkg).let { it.success to it.message }
-            }
+            },
+            onKillApp = { pkg ->
+                appController.killApp(pkg).let { it.success to it.message }
+            },
+            onClearAppCache = { pkg ->
+                appController.clearAppCache(pkg).let { it.success to it.message }
+            },
+            onExportLogs = {
+                LogUploadManager.uploadWithCurrentSettings(applicationContext).let {
+                    it.success to it.message
+                }
+            },
         )
 
         wsManager.incomingCommands
@@ -130,7 +140,12 @@ class ActionExecutorService : AccessibilityService() {
         val osVersion = "Android ${android.os.Build.VERSION.RELEASE}"
         val dm = resources.displayMetrics
         val resolution = "${dm.widthPixels}x${dm.heightPixels}"
-        return WsManager.DeviceMeta(model = model, osVersion = osVersion, resolution = resolution)
+        return WsManager.DeviceMeta(
+            model = model,
+            osVersion = osVersion,
+            resolution = resolution,
+            appVersion = BuildConfig.VERSION_NAME,
+        )
     }
 
     suspend fun captureScreenshotBitmap(): Result<Bitmap> =

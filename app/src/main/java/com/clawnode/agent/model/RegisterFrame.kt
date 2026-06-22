@@ -19,7 +19,8 @@ data class RegisterFrame(
         @SerializedName("role") val role: String = "node",
         @SerializedName("model") val model: String,
         @SerializedName("os_version") val osVersion: String,
-        @SerializedName("resolution") val resolution: String
+        @SerializedName("resolution") val resolution: String,
+        @SerializedName("app_version") val appVersion: String? = null
     )
 }
 

@@ -16,11 +16,17 @@ data class GatewayControl(
     @SerializedName("data") val data: Data? = null
 ) {
     data class Data(
-        @SerializedName("message") val message: String? = null
+        @SerializedName("message") val message: String? = null,
+        @SerializedName("ws_url") val wsUrl: String? = null,
+        @SerializedName("auth_token") val authToken: String? = null,
+        @SerializedName("gateway_id") val gatewayId: String? = null
     )
 
     companion object {
         const val TYPE_AUTH_OK = "AUTH_OK"
         const val TYPE_AUTH_FAILED = "AUTH_FAILED"
+        const val TYPE_PAIR_CONFIG = "PAIR_CONFIG"
+        const val TYPE_UNPAIR_CONFIG = "UNPAIR_CONFIG"
+        const val TYPE_DEVICE_LIST_UPDATE = "device_list_update"
     }
 }

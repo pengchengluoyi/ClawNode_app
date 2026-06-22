@@ -40,36 +40,46 @@ class AppController(
     }
 
     /**
-     * 关闭目标应用（无 root）：
-     * 1. GLOBAL_ACTION_HOME — 若目标在前台则切走
-     * 2. killBackgroundProcesses — 清理后台进程
+     * 切到后台（不杀进程）：仅按 Home。
      */
     fun closeApp(packageName: String): Result {
         if (packageName.isBlank()) {
             return Result(false, "CLOSE_APP requires package")
         }
-
         if (!isPackageInstalled(packageName)) {
             return Result(false, "package not installed: $packageName")
         }
-
         val homeOk = accessibilityService?.performGlobalAction(AccessibilityService.GLOBAL_ACTION_HOME) ?: false
         ClawLog.bp(TAG, "close_app_home", "pkg=$packageName home=$homeOk")
+        return Result(homeOk, if (homeOk) "moved $packageName to background" else "HOME action failed")
+    }
 
+    /**
+     * 从最近任务清除：打开 Recents 后按 Home（完整卡片滑动需 OEM 手势，此处尽力而为）。
+     */
+    fun killApp(packageName: String): Result {
+        if (packageName.isBlank()) return Result(false, "KILL_APP requires package")
+        closeApp(packageName)
+        val recentsOk = accessibilityService?.performGlobalAction(AccessibilityService.GLOBAL_ACTION_RECENTS) ?: false
+        ClawLog.bp(TAG, "kill_app_recents", "pkg=$packageName recents=$recentsOk")
+        accessibilityService?.performGlobalAction(AccessibilityService.GLOBAL_ACTION_HOME)
         val am = context.getSystemService(ActivityManager::class.java)
         am?.killBackgroundProcesses(packageName)
-        ClawLog.bp(TAG, "close_app_kill", "pkg=$packageName killBackgroundProcesses called")
+        return Result(true, "recents+killBackgroundProcesses for $packageName")
+    }
 
-        val stillRunning = isProcessRunning(packageName)
-        return if (stillRunning) {
-            ClawLog.w(TAG, "close_app_partial", "pkg=$packageName still in process list")
-            Result(
-                success = false,
-                message = "sent HOME + killBackgroundProcesses but $packageName may still be active " +
-                    "(foreground force-stop requires root/device-owner)"
-            )
-        } else {
-            Result(true, "closed $packageName")
+    fun clearAppCache(packageName: String): Result {
+        if (packageName.isBlank()) return Result(false, "CLEAR_APP_CACHE requires package")
+        killApp(packageName)
+        return try {
+            val intent = Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                data = android.net.Uri.parse("package:$packageName")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+            Result(true, "opened app settings for $packageName (manual clear cache if needed)")
+        } catch (e: Exception) {
+            Result(false, e.message ?: "clear cache failed")
         }
     }
 

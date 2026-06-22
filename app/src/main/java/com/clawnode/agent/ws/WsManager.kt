@@ -39,6 +39,10 @@ class WsManager(
     private val scope: CoroutineScope,
     /** 局域网 mDNS 发现：返回解析后的 ws:// URL，失败返回 null */
     private val discoverServer: (suspend () -> String?)? = null,
+    /** 服务端下发 PAIR_CONFIG 时持久化凭证 */
+    private val onPairConfig: (suspend (wsUrl: String, authToken: String, gatewayId: String) -> Unit)? = null,
+    /** 服务端解绑时清除凭证 */
+    private val onUnpair: (suspend () -> Unit)? = null,
     private val gson: Gson = Gson()
 ) {
     private val client: OkHttpClient = OkHttpClient.Builder()
@@ -72,7 +76,7 @@ class WsManager(
         ClawLog.bp(TAG, "device_meta", "model=${meta.model} res=${meta.resolution}")
     }
 
-    data class DeviceMeta(val model: String, val osVersion: String, val resolution: String)
+    data class DeviceMeta(val model: String, val osVersion: String, val resolution: String, val appVersion: String = "")
 
     private var connectJob: Job? = null
     private var heartbeatJob: Job? = null
@@ -278,7 +282,7 @@ class WsManager(
         val myEpoch = ++connectionEpoch
         setState(ConnectionState.Connecting)
         val current = settings
-        val url = buildUrlWithToken(connectUrl, current.authToken)
+        val url = buildUrlWithToken(connectUrl, current.authToken, current.nodeSn)
         ClawLog.bp(TAG, "ws_open", "sn=${current.nodeSn} epoch=$myEpoch url=$url")
 
         val request = Request.Builder()
@@ -317,7 +321,8 @@ class WsManager(
                         sn = current.nodeSn,
                         model = deviceMeta.model,
                         osVersion = deviceMeta.osVersion,
-                        resolution = deviceMeta.resolution
+                        resolution = deviceMeta.resolution,
+                        appVersion = deviceMeta.appVersion
                     )
                 )
                 val regJson = gson.toJson(register)
@@ -388,10 +393,26 @@ class WsManager(
                 handleAuthFailed(control.data?.message ?: "gateway rejected token")
                 return
             }
+            GatewayControl.TYPE_PAIR_CONFIG -> {
+                scope.launch {
+                    handlePairConfig(control.data)
+                }
+                return
+            }
+            GatewayControl.TYPE_UNPAIR_CONFIG -> {
+                scope.launch {
+                    handleUnpairConfig()
+                }
+                return
+            }
+            GatewayControl.TYPE_DEVICE_LIST_UPDATE -> {
+                ClawLog.bp(TAG, "rx_device_list_update", "ignored")
+                return
+            }
         }
 
         val ack = runCatching { gson.fromJson(text, ServerAck::class.java) }.getOrNull()
-        if (ack?.action != null) {
+        if (!ack?.action.isNullOrBlank()) {
             ClawLog.bp(TAG, "rx_ack", "action=${ack.action} code=${ack.code}")
             if (ack.action == "register_clawnode" && ack.code == 200) {
                 setState(ConnectionState.Authenticated)
@@ -400,7 +421,7 @@ class WsManager(
         }
 
         val cmd = runCatching { gson.fromJson(text, Command::class.java) }.getOrNull()
-        if (cmd == null || cmd.actionType.isBlank()) {
+        if (cmd == null || cmd.actionType.isNullOrBlank()) {
             ClawLog.w(TAG, "rx_drop", "malformed: $preview")
             return
         }
@@ -446,10 +467,43 @@ class WsManager(
         heartbeatJob = null
     }
 
-    private fun buildUrlWithToken(baseUrl: String, token: String): String {
-        if (token.isBlank() || baseUrl.contains("token=")) return baseUrl
+    private fun buildUrlWithToken(baseUrl: String, token: String, nodeSn: String): String {
+        if (baseUrl.contains("token=") || baseUrl.contains("pairing=")) return baseUrl
         val sep = if (baseUrl.contains("?")) "&" else "?"
-        return "$baseUrl${sep}token=$token"
+        if (token.isNotBlank()) return "$baseUrl${sep}token=$token"
+        if (nodeSn.isNotBlank()) {
+            return "$baseUrl${sep}pairing=1&node_sn=${java.net.URLEncoder.encode(nodeSn, "UTF-8")}"
+        }
+        return baseUrl
+    }
+
+    private suspend fun handlePairConfig(data: GatewayControl.Data?) {
+        val wsUrl = data?.wsUrl?.trim().orEmpty()
+        val authToken = data?.authToken?.trim().orEmpty()
+        val gatewayId = data?.gatewayId?.trim().orEmpty()
+        if (wsUrl.isBlank() || authToken.isBlank()) {
+            ClawLog.w(TAG, "pair_config_invalid", "missing ws/token")
+            return
+        }
+        ClawLog.bp(TAG, "pair_config_rx", "gateway=$gatewayId url=$wsUrl")
+        onPairConfig?.invoke(wsUrl, authToken, gatewayId)
+        authHalted = false
+        reconnectAttempt = 0
+        settings = settings.copy(wsUrl = wsUrl, authToken = authToken, pairedGatewayId = gatewayId)
+        restart()
+    }
+
+    private suspend fun handleUnpairConfig() {
+        ClawLog.bp(TAG, "unpair_config_rx", "clearing pairing")
+        onUnpair?.invoke()
+        authHalted = false
+        reconnectAttempt = 0
+        settings = settings.copy(
+            wsUrl = NodeSettings.AUTO_DISCOVERY_URL,
+            authToken = "",
+            pairedGatewayId = "",
+        )
+        restart()
     }
 
     private fun handleAuthOk() {

@@ -45,8 +45,18 @@ class MainActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         binding.tvVersion.text = "版本 ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})"
-
-        loadConfigIntoInputs()
+        binding.etWsUrl.visibility = View.GONE
+        binding.etAuthToken.visibility = View.GONE
+        binding.btnDiscover.visibility = View.GONE
+        binding.btnSaveConfig.visibility = View.GONE
+        lifecycleScope.launch {
+            val sn = config.defaultNodeSn
+            binding.tvConnState.text = "节点 SN：$sn\n等待桌面端添加…"
+            val s = config.settings.first()
+            if (s.wsUrl.isBlank()) {
+                config.save(NodeSettings.AUTO_DISCOVERY_URL, "")
+            }
+        }
         bindButtons()
         observeConnectionState()
         requestNotificationPermissionIfNeeded()

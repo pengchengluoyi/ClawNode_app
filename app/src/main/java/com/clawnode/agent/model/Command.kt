@@ -48,5 +48,8 @@ data class Command(
         const val STOP_APP = "STOP_APP"
         /** 部分服务端别名 */
         const val START_APP = "START_APP"
+        const val KILL_APP = "KILL_APP"
+        const val CLEAR_APP_CACHE = "CLEAR_APP_CACHE"
+        const val EXPORT_LOGS = "EXPORT_LOGS"
     }
 }
