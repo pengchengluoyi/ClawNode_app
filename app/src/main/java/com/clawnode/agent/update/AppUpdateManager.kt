@@ -83,9 +83,7 @@ object AppUpdateManager {
         ClawLog.bp(TAG, "check_start", "current=${BuildConfig.VERSION_NAME}(${BuildConfig.VERSION_CODE})")
         val current = BuildConfig.VERSION_NAME
 
-        val resolved = fetchFromManifest()
-            ?: fetchFromLatestRedirect()
-            ?: fetchFromGitHubApi()
+        val resolved = resolveLatestRelease()
 
         val hasUpdate = compareVersions(resolved.version, current) > 0
         ClawLog.bp(
@@ -111,6 +109,20 @@ object AppUpdateManager {
         val notes: String,
         val source: String
     )
+
+    /** 取 manifest / releases 重定向 / API 中版本号最高者，避免 main 上 latest.json 滞后 */
+    private fun resolveLatestRelease(): ResolvedRelease {
+        val candidates = buildList {
+            fetchFromManifest()?.let { add(it) }
+            fetchFromLatestRedirect()?.let { add(it) }
+            runCatching { fetchFromGitHubApi() }.onSuccess { add(it) }
+                .onFailure { e -> ClawLog.w(TAG, "api_miss", e.message ?: "") }
+        }
+        if (candidates.isEmpty()) {
+            throw IllegalStateException("无法获取最新版本信息")
+        }
+        return candidates.maxBy { compareVersions(it.version, "0") }
+    }
 
     private fun fetchFromManifest(): ResolvedRelease? {
         return runCatching {
