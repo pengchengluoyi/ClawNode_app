@@ -36,8 +36,7 @@ class MediaProjectionRequestActivity : Activity() {
         if (requestCode != REQ_CODE) return
 
         if (resultCode == RESULT_OK && data != null) {
-            MediaProjectionHolder.resultCode = resultCode
-            MediaProjectionHolder.resultData = data
+            MediaProjectionHolder.saveAuthorization(this, resultCode, data)
             ClawLog.bp(TAG, "auth_ok", "mode=$mode trace=$traceId")
             when (mode) {
                 MODE_STREAM -> StreamForegroundService.start(this, traceId, fps)

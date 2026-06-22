@@ -44,6 +44,7 @@ class ActionExecutorService : AccessibilityService() {
         super.onServiceConnected()
         instance = this
         ClawLog.bp(TAG, "service_connected", "accessibility service ready")
+        MediaProjectionHolder.restoreFromDisk(applicationContext)
 
         NodeForegroundService.start(applicationContext)
 

@@ -54,31 +54,28 @@ class VisionManager(
     }
 
     /**
-     * 前台：先 takeScreenshot，失败再 MediaProjection。
-     * 后台：直接 MediaProjection（需事先授权）。
+     * 前台与后台均优先 takeScreenshot；仅失败时再降级 MediaProjection。
+     * 原先后台直接跳过 a11y 会导致未授权 MediaProjection 时无法截图。
      */
     private suspend fun resolveBitmap(traceId: String, inBg: Boolean): Result<Bitmap> {
-        if (!inBg) {
-            val a11y = accessibilityService.captureScreenshotBitmap()
-            if (a11y.isSuccess) {
-                ClawLog.bp(TAG, "screenshot_path", "trace=$traceId mode=takeScreenshot")
-                return a11y
-            }
-            ClawLog.w(
-                TAG, "screenshot_a11y_fail",
-                "trace=$traceId err=${a11y.exceptionOrNull()?.message} → fallback projection"
-            )
-        } else {
-            ClawLog.bp(TAG, "screenshot_path", "trace=$traceId mode=mediaProjection(background)")
+        val a11y = accessibilityService.captureScreenshotBitmap()
+        if (a11y.isSuccess) {
+            ClawLog.bp(TAG, "screenshot_path", "trace=$traceId mode=takeScreenshot bg=$inBg")
+            return a11y
         }
+        ClawLog.w(
+            TAG, "screenshot_a11y_fail",
+            "trace=$traceId bg=$inBg err=${a11y.exceptionOrNull()?.message} → fallback projection"
+        )
 
         if (!MediaProjectionHolder.hasAuthorization()) {
             return Result.failure(
                 IllegalStateException(
-                    "background screenshot requires screen capture authorization; open app to grant"
+                    "background screenshot requires screen capture authorization; open ClawNode app → 授权屏幕捕获"
                 )
             )
         }
+        ClawLog.bp(TAG, "screenshot_path", "trace=$traceId mode=mediaProjection bg=$inBg")
         return ScreenshotCaptureBridge.captureOnce(context, traceId)
     }
 

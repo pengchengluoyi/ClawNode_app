@@ -1,5 +1,6 @@
 package com.clawnode.agent.vision
 
+import android.content.Context
 import android.content.Intent
 import android.media.projection.MediaProjection
 
@@ -23,8 +24,22 @@ object MediaProjectionHolder {
 
     fun hasAuthorization(): Boolean = resultData != null
 
-    fun clearAuthorization() {
+    fun restoreFromDisk(context: Context) {
+        if (resultData != null) return
+        val loaded = MediaProjectionAuthStore.load(context) ?: return
+        resultCode = loaded.first
+        resultData = loaded.second
+    }
+
+    fun saveAuthorization(context: Context, code: Int, data: Intent) {
+        resultCode = code
+        resultData = data
+        MediaProjectionAuthStore.save(context, code, data)
+    }
+
+    fun clearAuthorization(context: Context? = null) {
         resultCode = 0
         resultData = null
+        context?.let { MediaProjectionAuthStore.clear(it) }
     }
 }
