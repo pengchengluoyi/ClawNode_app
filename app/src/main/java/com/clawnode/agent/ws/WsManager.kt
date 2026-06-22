@@ -98,15 +98,24 @@ class WsManager(
     )
     val incomingCommands: SharedFlow<Command> = _incomingCommands.asSharedFlow()
 
+    @Volatile
+    private var unpairedHalt = false
+
     fun applySettings(newSettings: NodeSettings) {
         val old = settings
         settings = newSettings
 
-        if (!newSettings.isConnectable) {
-            ClawLog.w(TAG, "settings_idle", "url='${newSettings.wsUrl}' not connectable")
-            stop()
+        if (newSettings.userUnpaired || !newSettings.isConnectable) {
+            unpairedHalt = newSettings.userUnpaired
+            ClawLog.w(TAG, "settings_unpaired", "halt reconnect userUnpaired=${newSettings.userUnpaired}")
+            stopInternal(resetAuthHalt = false)
+            if (newSettings.userUnpaired) {
+                setState(ConnectionState.Unpaired)
+            }
             return
         }
+
+        unpairedHalt = false
 
         val tokenChanged = old.authToken != newSettings.authToken
         val urlChanged = old.wsUrl != newSettings.wsUrl
@@ -209,7 +218,7 @@ class WsManager(
 
     private suspend fun connectLoop() {
         ClawLog.bp(TAG, "connect_loop", "entered")
-        while (scope.isActive && !manualClosed && !authHalted) {
+        while (scope.isActive && !manualClosed && !authHalted && !unpairedHalt) {
             val connectUrl = resolveConnectUrl()
             if (connectUrl == null) {
                 reconnectAttempt += 1
@@ -400,6 +409,7 @@ class WsManager(
                 return
             }
             GatewayControl.TYPE_UNPAIR_CONFIG -> {
+                unpairedHalt = true
                 scope.launch {
                     handleUnpairConfig()
                 }
@@ -487,24 +497,32 @@ class WsManager(
             return
         }
         ClawLog.bp(TAG, "pair_config_rx", "gateway=$gatewayId url=$wsUrl")
+        unpairedHalt = false
         onPairConfig?.invoke(wsUrl, authToken, gatewayId)
         authHalted = false
         reconnectAttempt = 0
-        settings = settings.copy(wsUrl = wsUrl, authToken = authToken, pairedGatewayId = gatewayId)
+        settings = settings.copy(
+            wsUrl = wsUrl,
+            authToken = authToken,
+            pairedGatewayId = gatewayId,
+            userUnpaired = false,
+        )
         restart()
     }
 
     private suspend fun handleUnpairConfig() {
-        ClawLog.bp(TAG, "unpair_config_rx", "clearing pairing")
+        ClawLog.bp(TAG, "unpair_config_rx", "clearing pairing, halt reconnect")
+        unpairedHalt = true
         onUnpair?.invoke()
-        authHalted = false
         reconnectAttempt = 0
         settings = settings.copy(
-            wsUrl = NodeSettings.AUTO_DISCOVERY_URL,
+            wsUrl = "",
             authToken = "",
             pairedGatewayId = "",
+            userUnpaired = true,
         )
-        restart()
+        stopInternal(resetAuthHalt = false)
+        setState(ConnectionState.Unpaired)
     }
 
     private fun handleAuthOk() {

@@ -412,6 +412,7 @@ class MainActivity : AppCompatActivity() {
             is ConnectionState.Reconnecting -> "🟠 重连中…（第 ${state.attempt} 次，${state.nextDelayMs}ms 后）"
             is ConnectionState.Disconnected -> "🔴 已断开：${state.reason}"
             is ConnectionState.AuthFailed -> "⛔ 鉴权失败，请检查 Token（${state.reason}）"
+            is ConnectionState.Unpaired -> "⚪ 已解绑，等待桌面端重新添加配对"
         }
     }
 

@@ -3,6 +3,7 @@ package com.clawnode.agent.core
 import android.annotation.SuppressLint
 import android.content.Context
 import android.provider.Settings
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -41,7 +42,8 @@ class ConfigManager private constructor(context: Context) {
             wsUrl = prefs[KEY_WS_URL].orEmpty(),
             authToken = prefs[KEY_AUTH_TOKEN].orEmpty(),
             nodeSn = prefs[KEY_NODE_SN]?.takeIf { it.isNotBlank() } ?: defaultNodeSn,
-            pairedGatewayId = prefs[KEY_PAIRED_GATEWAY_ID].orEmpty()
+            pairedGatewayId = prefs[KEY_PAIRED_GATEWAY_ID].orEmpty(),
+            userUnpaired = prefs[KEY_USER_UNPAIRED] ?: false,
         )
     }
 
@@ -49,6 +51,9 @@ class ConfigManager private constructor(context: Context) {
         appContext.configDataStore.edit { prefs ->
             prefs[KEY_WS_URL] = wsUrl.trim()
             prefs[KEY_AUTH_TOKEN] = authToken.trim()
+            if (authToken.trim().isNotBlank()) {
+                prefs[KEY_USER_UNPAIRED] = false
+            }
         }
     }
 
@@ -61,14 +66,16 @@ class ConfigManager private constructor(context: Context) {
             prefs[KEY_WS_URL] = wsUrl.trim()
             prefs[KEY_AUTH_TOKEN] = authToken.trim()
             prefs[KEY_PAIRED_GATEWAY_ID] = gatewayId.trim()
+            prefs[KEY_USER_UNPAIRED] = false
         }
     }
 
     suspend fun clearPairing() {
         appContext.configDataStore.edit { prefs ->
-            prefs[KEY_WS_URL] = NodeSettings.AUTO_DISCOVERY_URL
+            prefs[KEY_WS_URL] = ""
             prefs[KEY_AUTH_TOKEN] = ""
             prefs[KEY_PAIRED_GATEWAY_ID] = ""
+            prefs[KEY_USER_UNPAIRED] = true
         }
     }
 
@@ -77,6 +84,7 @@ class ConfigManager private constructor(context: Context) {
         private val KEY_AUTH_TOKEN = stringPreferencesKey("auth_token")
         private val KEY_NODE_SN = stringPreferencesKey("node_sn")
         private val KEY_PAIRED_GATEWAY_ID = stringPreferencesKey("paired_gateway_id")
+        private val KEY_USER_UNPAIRED = booleanPreferencesKey("user_unpaired")
 
         @Volatile
         private var INSTANCE: ConfigManager? = null
