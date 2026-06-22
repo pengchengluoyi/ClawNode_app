@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import com.clawnode.agent.core.ClawLog
+import com.clawnode.agent.pairing.PairingHttpServer
 
 /**
  * 节点 LAN 广播（`_miniorange-node._tcp`），供桌面端「发现设备」。
@@ -28,6 +29,7 @@ object NodeBeacon {
             setAttribute("model", model)
             setAttribute("role", "node")
             setAttribute("paired", if (paired) "1" else "0")
+            setAttribute("pair_port", PairingHttpServer.PORT.toString())
         }
         registrationListener = object : NsdManager.RegistrationListener {
             override fun onServiceRegistered(info: NsdServiceInfo) {

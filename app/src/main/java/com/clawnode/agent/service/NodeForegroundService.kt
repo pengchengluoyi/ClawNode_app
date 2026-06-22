@@ -14,6 +14,7 @@ import com.clawnode.agent.R
 import com.clawnode.agent.core.ClawLog
 import com.clawnode.agent.core.ConfigManager
 import com.clawnode.agent.discovery.NodeBeacon
+import com.clawnode.agent.pairing.PairingHttpServer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -35,6 +36,7 @@ class NodeForegroundService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var beaconJob: Job? = null
+    private var pairingServerUp = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -48,6 +50,7 @@ class NodeForegroundService : Service() {
             ACTION_STOP -> {
                 ClawLog.bp(TAG, "onStartCommand", "stop requested")
                 stopBeaconLoop()
+                PairingHttpServer.stop()
                 NodeBeacon.stop(applicationContext)
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
@@ -64,6 +67,7 @@ class NodeForegroundService : Service() {
 
     override fun onDestroy() {
         stopBeaconLoop()
+        PairingHttpServer.stop()
         NodeBeacon.stop(applicationContext)
         scope.cancel()
         ClawLog.bp(TAG, "onDestroy", "node foreground service destroyed")
@@ -78,6 +82,14 @@ class NodeForegroundService : Service() {
             while (isActive) {
                 val settings = config.settings.first()
                 val paired = !settings.userUnpaired && settings.authToken.isNotBlank()
+                if (!paired && !pairingServerUp) {
+                    PairingHttpServer.start()
+                    pairingServerUp = true
+                    ClawLog.bp(TAG, "pair_listener", "started port=${PairingHttpServer.PORT}")
+                } else if (paired && pairingServerUp) {
+                    PairingHttpServer.stop()
+                    pairingServerUp = false
+                }
                 NodeBeacon.start(applicationContext, config.defaultNodeSn, model, paired)
                 delay(BEACON_REFRESH_MS)
             }
