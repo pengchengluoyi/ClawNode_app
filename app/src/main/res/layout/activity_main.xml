@@ -67,7 +67,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="4dp"
-            android:hint="ws://auto（Token 自动配对）"
+            android:hint="ws://auto（需先配对网关）"
             android:inputType="textUri"
             android:maxLines="1" />
 
@@ -75,7 +75,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="4dp"
-            android:text="留空或 ws://auto：扫描 miniorange-*.local 并用 Token 配对"
+            android:text="留空或 ws://auto：需先在「发现网关并配对」中选择网关"
             android:textSize="12sp" />
 
         <Button
@@ -83,7 +83,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
-            android:text="搜索局域网并 Token 配对" />
+            android:text="发现网关并配对" />
 
         <TextView
             android:layout_width="match_parent"

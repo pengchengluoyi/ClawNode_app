@@ -52,19 +52,27 @@ class ActionExecutorService : AccessibilityService() {
         val configManager = ConfigManager.get(applicationContext)
         wsManager = WsManager(scope, discoverServer = {
             val current = configManager.settings.first()
-            if (current.authToken.isBlank()) {
-                ClawLog.w(TAG, "discovery_skip", "token empty")
+            if (current.pairedGatewayId.isBlank()) {
+                ClawLog.w(TAG, "discovery_skip", "no paired gateway")
                 return@WsManager null
             }
-            val paired = com.clawnode.agent.discovery.ServerDiscovery.pairByToken(
-                context = applicationContext,
-                token = current.authToken,
-                nodeSn = current.nodeSn
+            val gateways = com.clawnode.agent.discovery.ServerDiscovery.findGateways(applicationContext)
+            val matched = com.clawnode.agent.discovery.ServerDiscovery.matchPaired(
+                gateways,
+                current.pairedGatewayId
             ) ?: return@WsManager null
-            configManager.save(paired.wsUrl, current.authToken)
-            paired.wsUrl
+            if (matched.wsUrl != current.wsUrl) {
+                configManager.savePairing(matched.wsUrl, current.authToken, current.pairedGatewayId)
+            }
+            matched.wsUrl
         })
         wsManager.setDeviceMeta(buildDeviceMeta())
+        val meta = buildDeviceMeta()
+        com.clawnode.agent.discovery.NodeBeacon.start(
+            applicationContext,
+            sn = configManager.defaultNodeSn,
+            model = meta.model
+        )
         StreamBridge.wsRef = wsManager
         visionManager = VisionManager(
             context = applicationContext,
@@ -200,6 +208,7 @@ class ActionExecutorService : AccessibilityService() {
         if (::visionManager.isInitialized) {
             runCatching { visionManager.stopStream(null) }
         }
+        com.clawnode.agent.discovery.NodeBeacon.stop(applicationContext)
         if (::wsManager.isInitialized) {
             runCatching { wsManager.stop() }
         }

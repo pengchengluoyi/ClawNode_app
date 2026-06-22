@@ -6,7 +6,9 @@ package com.clawnode.agent.core
 data class NodeSettings(
     val wsUrl: String,
     val authToken: String,
-    val nodeSn: String
+    val nodeSn: String,
+    /** 用户确认配对后的 gateway 实例 ID（miniorange-xxx） */
+    val pairedGatewayId: String = ""
 ) {
     /** 使用 mDNS 自动发现，无需手填 IP */
     val usesAutoDiscovery: Boolean

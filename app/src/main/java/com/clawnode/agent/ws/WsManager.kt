@@ -251,9 +251,9 @@ class WsManager(
     }
 
     private suspend fun tryAutoDiscovery() {
-        if (discoverServer == null || settings.usesAutoDiscovery) return
-        val discovered = runDiscovery("connect_failure")
-        if (!discovered.isNullOrBlank() && discovered != settings.wsUrl) {
+        if (discoverServer == null) return
+        val discovered = runDiscovery("connect_failure") ?: return
+        if (discovered.isNotBlank() && discovered != settings.wsUrl) {
             settings = settings.copy(wsUrl = discovered)
             reconnectAttempt = 0
             ClawLog.bp(TAG, "discovery_applied", "newUrl=$discovered")

@@ -40,8 +40,8 @@ class ConfigManager private constructor(context: Context) {
         NodeSettings(
             wsUrl = prefs[KEY_WS_URL].orEmpty(),
             authToken = prefs[KEY_AUTH_TOKEN].orEmpty(),
-            // 未持久化过则回退到 Android ID
-            nodeSn = prefs[KEY_NODE_SN]?.takeIf { it.isNotBlank() } ?: defaultNodeSn
+            nodeSn = prefs[KEY_NODE_SN]?.takeIf { it.isNotBlank() } ?: defaultNodeSn,
+            pairedGatewayId = prefs[KEY_PAIRED_GATEWAY_ID].orEmpty()
         )
     }
 
@@ -52,10 +52,23 @@ class ConfigManager private constructor(context: Context) {
         }
     }
 
+    suspend fun savePairing(
+        wsUrl: String,
+        authToken: String,
+        gatewayId: String
+    ) {
+        appContext.configDataStore.edit { prefs ->
+            prefs[KEY_WS_URL] = wsUrl.trim()
+            prefs[KEY_AUTH_TOKEN] = authToken.trim()
+            prefs[KEY_PAIRED_GATEWAY_ID] = gatewayId.trim()
+        }
+    }
+
     companion object {
         private val KEY_WS_URL = stringPreferencesKey("ws_url")
         private val KEY_AUTH_TOKEN = stringPreferencesKey("auth_token")
         private val KEY_NODE_SN = stringPreferencesKey("node_sn")
+        private val KEY_PAIRED_GATEWAY_ID = stringPreferencesKey("paired_gateway_id")
 
         @Volatile
         private var INSTANCE: ConfigManager? = null

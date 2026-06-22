@@ -19,6 +19,10 @@ import com.clawnode.agent.core.ConfigManager
 import com.clawnode.agent.core.ConnectionState
 import com.clawnode.agent.core.NodeSettings
 import com.clawnode.agent.core.NodeStatusBus
+import android.view.LayoutInflater
+import android.widget.ArrayAdapter
+import android.widget.ListView
+import com.clawnode.agent.discovery.GatewayProbe
 import com.clawnode.agent.discovery.ServerDiscovery
 import com.clawnode.agent.databinding.ActivityMainBinding
 import com.clawnode.agent.log.LogUploadManager
@@ -119,51 +123,109 @@ class MainActivity : AppCompatActivity() {
     private fun discoverGateway() {
         lifecycleScope.launch {
             binding.btnDiscover.isEnabled = false
-            binding.btnDiscover.text = "搜索并配对中…"
+            binding.btnDiscover.text = "搜索网关…"
             try {
                 val token = binding.etAuthToken.text?.toString()?.trim().orEmpty()
                 if (token.isBlank()) {
-                    toast("请先填写 Auth Token，再搜索配对")
+                    toast("请先填写 Auth Token")
                     return@launch
                 }
-                val nodeSn = config.settings.first().nodeSn
-                val paired = ServerDiscovery.pairByToken(
-                    context = this@MainActivity,
-                    token = token,
-                    nodeSn = nodeSn
-                )
-                if (paired == null) {
-                    val seen = ServerDiscovery.findAll(this@MainActivity)
-                    val hint = if (seen.isEmpty()) {
-                        "未发现 miniorange-* 网关。\n请确认手机与电脑同一 WiFi，且 MiniOrangeServer 已启动。"
-                    } else {
-                        "发现 ${seen.size} 台网关，但 Token 均不匹配：\n" +
-                            seen.joinToString("\n") { "• ${it.serviceName} → ${it.wsUrl}" }
-                    }
+                val gateways = ServerDiscovery.findGateways(this@MainActivity)
+                if (gateways.isEmpty()) {
                     AlertDialog.Builder(this@MainActivity)
-                        .setTitle("配对失败")
-                        .setMessage(hint)
+                        .setTitle("未发现网关")
+                        .setMessage("请确认手机与 MiniOrangeServer 在同一 WiFi，且服务端已启动。")
                         .setPositiveButton("确定", null)
                         .show()
                     return@launch
                 }
-                applyDiscoveredGateway(paired)
+                showGatewayPicker(gateways, token)
             } catch (e: Exception) {
                 ClawLog.e(TAG, "discover_fail", "", e)
                 toast("搜索失败：${e.message}")
             } finally {
                 binding.btnDiscover.isEnabled = true
-                binding.btnDiscover.text = "搜索局域网并 Token 配对"
+                binding.btnDiscover.text = "发现网关并配对"
             }
         }
     }
 
-    private fun applyDiscoveredGateway(result: ServerDiscovery.Result) {
+    private fun showGatewayPicker(gateways: List<ServerDiscovery.Gateway>, token: String) {
+        val inflater = LayoutInflater.from(this)
+        val listView = ListView(this)
+        val adapter = object : ArrayAdapter<ServerDiscovery.Gateway>(
+            this,
+            android.R.layout.simple_list_item_single_choice,
+            gateways
+        ) {
+            override fun getView(position: Int, convertView: android.view.View?, parent: android.view.ViewGroup): android.view.View {
+                val view = convertView ?: inflater.inflate(com.clawnode.agent.R.layout.item_gateway, parent, false)
+                val item = getItem(position)!!
+                view.findViewById<android.widget.TextView>(com.clawnode.agent.R.id.tvGatewayTitle).text =
+                    item.displayName
+                view.findViewById<android.widget.TextView>(com.clawnode.agent.R.id.tvGatewaySubtitle).text =
+                    "${item.wsUrl}\n${item.lanHost ?: item.host}"
+                return view
+            }
+        }
+        listView.adapter = adapter
+        listView.choiceMode = ListView.CHOICE_MODE_SINGLE
+        listView.setItemChecked(0, true)
+
+        AlertDialog.Builder(this)
+            .setTitle("选择网关（${gateways.size}）")
+            .setView(listView)
+            .setNegativeButton("取消", null)
+            .setPositiveButton("确认连接") { _, _ ->
+                val idx = listView.checkedItemPosition.takeIf { it >= 0 } ?: 0
+                val picked = gateways[idx]
+                confirmPairGateway(picked, token)
+            }
+            .show()
+    }
+
+    private fun confirmPairGateway(gateway: ServerDiscovery.Gateway, token: String) {
+        lifecycleScope.launch {
+            binding.btnDiscover.isEnabled = false
+            binding.btnDiscover.text = "鉴权中…"
+            try {
+                val nodeSn = config.settings.first().nodeSn
+                when (
+                    val probe = GatewayProbe.probe(
+                        wsUrl = gateway.wsUrl,
+                        token = token,
+                        nodeSn = nodeSn
+                    )
+                ) {
+                    is GatewayProbe.ProbeResult.Accepted -> {
+                        binding.etWsUrl.setText(gateway.wsUrl)
+                        config.savePairing(gateway.wsUrl, token, gateway.instanceId)
+                        toast("已配对：${gateway.displayName}")
+                    }
+                    is GatewayProbe.ProbeResult.AuthRejected -> {
+                        AlertDialog.Builder(this@MainActivity)
+                            .setTitle("Token 不匹配")
+                            .setMessage("${gateway.displayName}\n请检查 Auth Token 是否为该网关的密钥。")
+                            .setPositiveButton("确定", null)
+                            .show()
+                    }
+                    is GatewayProbe.ProbeResult.Failed -> {
+                        toast("连接失败：${probe.message}")
+                    }
+                }
+            } finally {
+                binding.btnDiscover.isEnabled = true
+                binding.btnDiscover.text = "发现网关并配对"
+            }
+        }
+    }
+
+    private fun applyDiscoveredGateway(result: ServerDiscovery.Gateway) {
         binding.etWsUrl.setText(result.wsUrl)
         val token = binding.etAuthToken.text?.toString()?.trim().orEmpty()
         lifecycleScope.launch {
-            config.save(result.wsUrl, token)
-            toast("已配对：${result.serviceName} → ${result.wsUrl}")
+            config.savePairing(result.wsUrl, token, result.instanceId)
+            toast("已配对：${result.displayName} → ${result.wsUrl}")
         }
     }
 
@@ -333,7 +395,7 @@ class MainActivity : AppCompatActivity() {
     private fun renderConnection(state: ConnectionState) {
         binding.tvConnState.text = when (state) {
             is ConnectionState.Idle -> "⚪ 未连接（请确认无障碍已开启且已填写 Token）"
-            is ConnectionState.Discovering -> "🔍 扫描 miniorange-* 并用 Token 配对…"
+            is ConnectionState.Discovering -> "🔍 正在发现局域网网关…"
             is ConnectionState.Connecting -> "🟡 连接中…"
             is ConnectionState.Connected -> "🟡 已连接，鉴权中…"
             is ConnectionState.Authenticated -> "🟢 已连接且已鉴权"
