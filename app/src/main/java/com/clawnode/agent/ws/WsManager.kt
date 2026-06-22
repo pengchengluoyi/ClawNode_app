@@ -1,6 +1,7 @@
 package com.clawnode.agent.ws
 
 import com.clawnode.agent.ClawNodeApp
+import com.clawnode.agent.core.ClawLog
 import com.clawnode.agent.core.ConnectionState
 import com.clawnode.agent.core.NodeConfig
 import com.clawnode.agent.core.NodeSettings
