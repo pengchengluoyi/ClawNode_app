@@ -20,6 +20,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
@@ -75,7 +76,9 @@ class NodeForegroundService : Service() {
             val config = ConfigManager.get(applicationContext)
             val model = "${Build.MANUFACTURER} ${Build.MODEL}".trim().ifBlank { "Android Node" }
             while (isActive) {
-                NodeBeacon.start(applicationContext, config.defaultNodeSn, model)
+                val settings = config.settings.first()
+                val paired = !settings.userUnpaired && settings.authToken.isNotBlank()
+                NodeBeacon.start(applicationContext, config.defaultNodeSn, model, paired)
                 delay(BEACON_REFRESH_MS)
             }
         }

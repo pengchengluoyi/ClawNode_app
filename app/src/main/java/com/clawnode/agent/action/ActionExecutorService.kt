@@ -74,6 +74,7 @@ class ActionExecutorService : AccessibilityService() {
                     applicationContext,
                     sn = configManager.defaultNodeSn,
                     model = meta.model,
+                    paired = false,
                 )
             },
         )

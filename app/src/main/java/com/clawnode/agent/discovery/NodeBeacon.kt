@@ -16,7 +16,7 @@ object NodeBeacon {
 
     private var registrationListener: NsdManager.RegistrationListener? = null
 
-    fun start(context: Context, sn: String, model: String) {
+    fun start(context: Context, sn: String, model: String, paired: Boolean = true) {
         stop(context)
         val nsd = context.applicationContext.getSystemService(Context.NSD_SERVICE) as? NsdManager ?: return
         val instance = sanitizeInstance(sn)
@@ -27,6 +27,7 @@ object NodeBeacon {
             setAttribute("sn", sn)
             setAttribute("model", model)
             setAttribute("role", "node")
+            setAttribute("paired", if (paired) "1" else "0")
         }
         registrationListener = object : NsdManager.RegistrationListener {
             override fun onServiceRegistered(info: NsdServiceInfo) {
