@@ -18,6 +18,7 @@ import com.clawnode.agent.core.ClawLog
 import com.clawnode.agent.core.ConfigManager
 import com.clawnode.agent.core.ConnectionState
 import com.clawnode.agent.core.NodeSettings
+import com.clawnode.agent.core.NodeStatusBus
 import com.clawnode.agent.discovery.ServerDiscovery
 import com.clawnode.agent.databinding.ActivityMainBinding
 import com.clawnode.agent.log.LogUploadManager
