@@ -56,24 +56,28 @@ class ActionExecutorService : AccessibilityService() {
         val configManager = ConfigManager.get(applicationContext)
         wsManager = WsManager(
             scope,
-            discoverServer = {
+            discoverServer = { pairedGatewayId ->
                 val gateways = com.clawnode.agent.discovery.ServerDiscovery.findGateways(applicationContext)
-                gateways.firstOrNull()?.wsUrl
+                com.clawnode.agent.discovery.ServerDiscovery.matchPaired(gateways, pairedGatewayId)?.wsUrl
+                    ?: gateways.firstOrNull()?.wsUrl
             },
             onPairConfig = { wsUrl, authToken, gatewayId ->
                 configManager.savePairing(wsUrl, authToken, gatewayId)
             },
+            onUrlDiscovered = { wsUrl ->
+                configManager.saveDiscoveredUrl(wsUrl)
+            },
             onUnpair = {
                 configManager.clearPairing()
+                val meta = buildDeviceMeta()
+                com.clawnode.agent.discovery.NodeBeacon.start(
+                    applicationContext,
+                    sn = configManager.defaultNodeSn,
+                    model = meta.model,
+                )
             },
         )
         wsManager.setDeviceMeta(buildDeviceMeta())
-        val meta = buildDeviceMeta()
-        com.clawnode.agent.discovery.NodeBeacon.start(
-            applicationContext,
-            sn = configManager.defaultNodeSn,
-            model = meta.model
-        )
         StreamBridge.wsRef = wsManager
         visionManager = VisionManager(
             context = applicationContext,
@@ -99,8 +103,8 @@ class ActionExecutorService : AccessibilityService() {
             onClearAppCache = { pkg ->
                 appController.clearAppCache(pkg).let { it.success to it.message }
             },
-            onExportLogs = {
-                LogUploadManager.uploadWithCurrentSettings(applicationContext).let {
+            onExportLogs = { minutes ->
+                LogUploadManager.uploadWithCurrentSettings(applicationContext, minutes).let {
                     it.success to it.message
                 }
             },
@@ -225,7 +229,6 @@ class ActionExecutorService : AccessibilityService() {
         if (::visionManager.isInitialized) {
             runCatching { visionManager.stopStream(null) }
         }
-        com.clawnode.agent.discovery.NodeBeacon.stop(applicationContext)
         if (::wsManager.isInitialized) {
             runCatching { wsManager.stop() }
         }

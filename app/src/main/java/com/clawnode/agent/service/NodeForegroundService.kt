@@ -12,14 +12,28 @@ import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.clawnode.agent.R
 import com.clawnode.agent.core.ClawLog
+import com.clawnode.agent.core.ConfigManager
+import com.clawnode.agent.discovery.NodeBeacon
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 
 /**
  * 节点常驻前台服务（dataSync 类型）。
  *
  * 在无障碍服务连接后启动，显示持续通知，降低进程被 OEM 杀死的概率，
  * 并为 WebSocket 心跳 / 后台指令提供稳定的进程与网络环境。
+ * 同时在此服务内周期性重新注册 mDNS，避免熄屏/Doze 后局域网发现失效。
  */
 class NodeForegroundService : Service() {
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var beaconJob: Job? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -32,6 +46,8 @@ class NodeForegroundService : Service() {
         when (intent?.action) {
             ACTION_STOP -> {
                 ClawLog.bp(TAG, "onStartCommand", "stop requested")
+                stopBeaconLoop()
+                NodeBeacon.stop(applicationContext)
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
                 return START_NOT_STICKY
@@ -39,14 +55,35 @@ class NodeForegroundService : Service() {
             else -> {
                 ClawLog.bp(TAG, "onStartCommand", "enter foreground")
                 promoteToForeground()
+                startBeaconLoop()
             }
         }
         return START_STICKY
     }
 
     override fun onDestroy() {
+        stopBeaconLoop()
+        NodeBeacon.stop(applicationContext)
+        scope.cancel()
         ClawLog.bp(TAG, "onDestroy", "node foreground service destroyed")
         super.onDestroy()
+    }
+
+    private fun startBeaconLoop() {
+        if (beaconJob?.isActive == true) return
+        beaconJob = scope.launch {
+            val config = ConfigManager.get(applicationContext)
+            val model = "${Build.MANUFACTURER} ${Build.MODEL}".trim().ifBlank { "Android Node" }
+            while (isActive) {
+                NodeBeacon.start(applicationContext, config.defaultNodeSn, model)
+                delay(BEACON_REFRESH_MS)
+            }
+        }
+    }
+
+    private fun stopBeaconLoop() {
+        beaconJob?.cancel()
+        beaconJob = null
     }
 
     private fun promoteToForeground() {
@@ -90,6 +127,7 @@ class NodeForegroundService : Service() {
         private const val CHANNEL_ID = "clawnode_node"
         private const val NOTIF_ID = 0xC1A5
         private const val ACTION_STOP = "com.clawnode.agent.STOP_NODE_FG"
+        private const val BEACON_REFRESH_MS = 30_000L
 
         fun start(context: Context) {
             ClawLog.bp(TAG, "start", "launching node foreground service")
