@@ -19,4 +19,7 @@ sealed interface ConnectionState {
 
     /** 鉴权失败：已熔断重连，需用户更新 Token */
     data class AuthFailed(val reason: String) : ConnectionState
+
+    /** 桌面端已解绑：停止自动发现与重连，等待重新配对 */
+    data object Unpaired : ConnectionState
 }
