@@ -110,7 +110,7 @@ object AppUpdateManager {
         val source: String
     )
 
-    /** 取 manifest / releases 重定向 / API 中版本号最高者，避免 main 上 latest.json 滞后 */
+    /** 取 manifest / releases 重定向 / API 中版本号最高且 APK 可下载的版本 */
     private fun resolveLatestRelease(): ResolvedRelease {
         val candidates = buildList {
             fetchFromManifest()?.let { add(it) }
@@ -121,7 +121,34 @@ object AppUpdateManager {
         if (candidates.isEmpty()) {
             throw IllegalStateException("无法获取最新版本信息")
         }
-        return candidates.maxBy { compareVersions(it.version, "0") }
+        val sorted = candidates.sortedByDescending { compareVersions(it.version, "0") }
+        for (candidate in sorted) {
+            val url = candidate.downloadUrl
+            if (url.isNullOrBlank()) continue
+            if (isDownloadAvailable(url)) {
+                ClawLog.bp(TAG, "resolve_pick", "v${candidate.version} source=${candidate.source}")
+                return candidate
+            }
+            ClawLog.w(TAG, "resolve_skip", "v${candidate.version} url unavailable source=${candidate.source}")
+        }
+        throw IllegalStateException("无法获取可下载的最新版本（Release 可能正在发布中）")
+    }
+
+    /** HEAD 探测：manifest 可能先于 GitHub Release 资产就绪，避免 404 */
+    private fun isDownloadAvailable(url: String): Boolean {
+        return runCatching {
+            val request = Request.Builder()
+                .url(url)
+                .head()
+                .header("User-Agent", userAgent())
+                .build()
+            client.newCall(request).execute().use { response ->
+                response.code in 200..399
+            }
+        }.getOrElse { e ->
+            ClawLog.w(TAG, "url_probe_fail", "${e.message} url=$url")
+            false
+        }
     }
 
     private fun fetchFromManifest(): ResolvedRelease? {
@@ -236,31 +263,44 @@ object AppUpdateManager {
 
     suspend fun downloadApk(context: Context, url: String, fileName: String): File =
         withContext(Dispatchers.IO) {
-            ClawLog.bp(TAG, "download_start", "url=$url")
-            val dir = File(context.cacheDir, "updates").apply { mkdirs() }
-            val outFile = File(dir, fileName)
-            if (outFile.exists()) outFile.delete()
-
-            val request = Request.Builder()
-                .url(url)
-                .header("User-Agent", userAgent())
-                .build()
-
-            client.newCall(request).execute().use { response ->
-                if (response.code == 403) {
-                    throw IllegalStateException("下载被拒绝(403)，请稍后重试")
+            runCatching { downloadApkOnce(context, url, fileName) }
+                .getOrElse { first ->
+                    if (first !is IllegalStateException || !first.message.orEmpty().contains("404")) throw first
+                    ClawLog.w(TAG, "download_retry", "404 on $url, re-resolving release")
+                    val fallback = resolveLatestRelease()
+                    val retryUrl = fallback.downloadUrl
+                        ?: throw IllegalStateException("无可用下载地址")
+                    if (retryUrl == url) throw first
+                    downloadApkOnce(context, retryUrl, fallback.assetName ?: fileName)
                 }
-                if (!response.isSuccessful) {
-                    throw IllegalStateException("download HTTP ${response.code}")
-                }
-                response.body?.byteStream()?.use { input ->
-                    outFile.outputStream().use { output -> input.copyTo(output) }
-                } ?: throw IllegalStateException("empty response body")
-            }
-
-            ClawLog.bp(TAG, "download_ok", "size=${outFile.length()}")
-            outFile
         }
+
+    private fun downloadApkOnce(context: Context, url: String, fileName: String): File {
+        ClawLog.bp(TAG, "download_start", "url=$url")
+        val dir = File(context.cacheDir, "updates").apply { mkdirs() }
+        val outFile = File(dir, fileName)
+        if (outFile.exists()) outFile.delete()
+
+        val request = Request.Builder()
+            .url(url)
+            .header("User-Agent", userAgent())
+            .build()
+
+        client.newCall(request).execute().use { response ->
+            if (response.code == 403) {
+                throw IllegalStateException("下载被拒绝(403)，请稍后重试")
+            }
+            if (!response.isSuccessful) {
+                throw IllegalStateException("download HTTP ${response.code}")
+            }
+            response.body?.byteStream()?.use { input ->
+                outFile.outputStream().use { output -> input.copyTo(output) }
+            } ?: throw IllegalStateException("empty response body")
+        }
+
+        ClawLog.bp(TAG, "download_ok", "size=${outFile.length()}")
+        return outFile
+    }
 
     fun canInstallPackages(context: Context): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return true
