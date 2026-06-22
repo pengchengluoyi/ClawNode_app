@@ -12,6 +12,7 @@ import com.clawnode.agent.log.LogUploadManager
 import com.clawnode.agent.core.ConfigManager
 import com.clawnode.agent.core.NodeStatusBus
 import com.clawnode.agent.service.NodeForegroundService
+import com.clawnode.agent.pairing.PairingBridge
 import com.clawnode.agent.system.AppController
 import com.clawnode.agent.system.WakeUpActivity
 import com.clawnode.agent.vision.MediaProjectionHolder
@@ -79,6 +80,9 @@ class ActionExecutorService : AccessibilityService() {
             },
         )
         wsManager.setDeviceMeta(buildDeviceMeta())
+        PairingBridge.onPairPush = { payload ->
+            wsManager.applyPairConfigPush(payload.wsUrl, payload.authToken, payload.gatewayId)
+        }
         StreamBridge.wsRef = wsManager
         visionManager = VisionManager(
             context = applicationContext,

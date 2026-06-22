@@ -103,20 +103,16 @@ class WsManager(
     @Volatile
     private var unpairedHalt = false
 
-    @Volatile
-    private var pairingLoopActive = false
-
     fun applySettings(newSettings: NodeSettings) {
         val old = settings
         settings = newSettings
 
         if (newSettings.userUnpaired) {
             unpairedHalt = false
-            ClawLog.bp(TAG, "pairing_mode", "start LAN pairing loop sn=${newSettings.nodeSn}")
+            ClawLog.bp(TAG, "await_pair_push", "mDNS broadcast only sn=${newSettings.nodeSn}")
             stopInternal(resetAuthHalt = false)
-            manualClosed = false
+            manualClosed = true
             setState(ConnectionState.Unpaired)
-            startPairingLoop()
             return
         }
 
@@ -161,60 +157,16 @@ class WsManager(
             ClawLog.w(TAG, "start_blocked", "url not connectable")
             return
         }
-        if (connectJob?.isActive == true && !pairingLoopActive) {
+        if (connectJob?.isActive == true) {
             ClawLog.bp(TAG, "start_skip", "connect loop already running")
             return
         }
         manualClosed = false
-        pairingLoopActive = false
         connectJob = scope.launch { connectLoop() }
-    }
-
-    private fun startPairingLoop() {
-        if (connectJob?.isActive == true && pairingLoopActive) {
-            ClawLog.bp(TAG, "pairing_skip", "pairing loop already running")
-            return
-        }
-        manualClosed = false
-        pairingLoopActive = true
-        connectJob = scope.launch {
-            pairingConnectLoop()
-            pairingLoopActive = false
-        }
-    }
-
-    private suspend fun pairingConnectLoop() {
-        ClawLog.bp(TAG, "pairing_loop", "entered sn=${settings.nodeSn}")
-        var attempt = 0
-        while (scope.isActive && !manualClosed && settings.userUnpaired) {
-            if (NodeStatusBus.manualDiscoveryActive) {
-                setState(ConnectionState.Discovering)
-                delay(300)
-                continue
-            }
-            val connectUrl = runDiscovery("pairing_mode")
-            if (connectUrl.isNullOrBlank()) {
-                attempt++
-                val delayMs = min(5000L + attempt * 1000L, 15000L)
-                ClawLog.w(TAG, "pairing_wait_gateway", "attempt=$attempt delayMs=$delayMs")
-                setState(ConnectionState.Discovering)
-                delay(delayMs)
-                continue
-            }
-            attempt = 0
-            ClawLog.bp(TAG, "pairing_connect", "url=$connectUrl sn=${settings.nodeSn}")
-            val closedReason = openOnce(connectUrl, pairingAttempt = true)
-            ClawLog.bp(TAG, "pairing_session_end", "reason=$closedReason stillUnpaired=${settings.userUnpaired}")
-            if (!settings.userUnpaired || manualClosed) break
-            val delayMs = if (closedReason.startsWith("pairing_rejected")) 2000L else 3000L
-            delay(delayMs)
-        }
-        ClawLog.bp(TAG, "pairing_loop", "exited")
     }
 
     private fun restart() {
         ClawLog.bp(TAG, "restart", "stop then start")
-        pairingLoopActive = false
         stopInternal(resetAuthHalt = false)
         manualClosed = false
         start()
@@ -361,13 +313,12 @@ class WsManager(
         return discovered
     }
 
-    private suspend fun openOnce(connectUrl: String, pairingAttempt: Boolean = false): String {
+    private suspend fun openOnce(connectUrl: String): String {
         val myEpoch = ++connectionEpoch
         setState(ConnectionState.Connecting)
         val current = settings
         val url = buildUrlWithToken(connectUrl, current.authToken, current.nodeSn)
-        val inPairing = pairingAttempt || pairingLoopActive || current.userUnpaired
-        ClawLog.bp(TAG, "ws_open", "sn=${current.nodeSn} epoch=$myEpoch pairing=$inPairing url=$url")
+        ClawLog.bp(TAG, "ws_open", "sn=${current.nodeSn} epoch=$myEpoch url=$url")
 
         val request = Request.Builder()
             .url(url)
@@ -455,16 +406,6 @@ class WsManager(
                 stopHeartbeat()
                 ClawLog.e(TAG, "ws_failure", "http=${response?.code} msg=${t.message}", t)
                 if (isAuthFailure(t, response)) {
-                    if (inPairing) {
-                        ClawLog.w(
-                            TAG,
-                            "pairing_rejected",
-                            "http=${response?.code} (desktop adopt may not be ready yet)",
-                        )
-                        setState(ConnectionState.Unpaired)
-                        if (!done.isCompleted) done.complete("pairing_rejected: ${t.message}")
-                        return
-                    }
                     if (!done.isCompleted) done.complete("auth: ${t.message}")
                     handleAuthFailed(t.message ?: "HTTP ${response?.code}")
                     return
@@ -578,6 +519,22 @@ class WsManager(
         return baseUrl
     }
 
+    /** Server 通过局域网 HTTP 推送配对配置（被动接受，类似蓝牙配对）。 */
+    suspend fun applyPairConfigPush(wsUrl: String, authToken: String, gatewayId: String): Boolean {
+        return runCatching {
+            handlePairConfig(
+                com.clawnode.agent.model.GatewayControl.Data(
+                    wsUrl = wsUrl,
+                    authToken = authToken,
+                    gatewayId = gatewayId,
+                ),
+            )
+            true
+        }.onFailure { e ->
+            ClawLog.e(TAG, "pair_push_apply_fail", e.message ?: "", e)
+        }.getOrDefault(false)
+    }
+
     private suspend fun handlePairConfig(data: GatewayControl.Data?) {
         val wsUrl = data?.wsUrl?.trim().orEmpty()
         val authToken = data?.authToken?.trim().orEmpty()
@@ -588,6 +545,7 @@ class WsManager(
         }
         ClawLog.bp(TAG, "pair_config_rx", "gateway=$gatewayId url=$wsUrl")
         unpairedHalt = false
+        manualClosed = false
         onPairConfig?.invoke(wsUrl, authToken, gatewayId)
         authHalted = false
         reconnectAttempt = 0
@@ -622,10 +580,6 @@ class WsManager(
 
     private fun handleAuthFailed(reason: String) {
         ClawLog.e(TAG, "auth_failed", reason)
-        if (pairingLoopActive) {
-            setState(ConnectionState.Unpaired)
-            return
-        }
         authHalted = true
         reconnectAttempt = 0
         invalidateInFlightConnections("auth failed")
