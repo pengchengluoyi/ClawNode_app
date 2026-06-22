@@ -54,6 +54,8 @@ class NodeForegroundService : Service() {
             ACTION_STOP -> {
                 ClawLog.bp(TAG, "onStartCommand", "stop requested")
                 stopBeaconLoop()
+                stopConnectionWatchdog()
+                ConnectionWatchdog.cancel(applicationContext)
                 PairingHttpServer.stop()
                 NodeBeacon.stop(applicationContext)
                 stopForeground(STOP_FOREGROUND_REMOVE)
@@ -66,6 +68,7 @@ class NodeForegroundService : Service() {
                 promoteToForeground()
                 startBeaconLoop()
                 startConnectionWatchdog()
+                ConnectionWatchdog.schedule(applicationContext)
             }
         }
         return START_STICKY
@@ -74,6 +77,7 @@ class NodeForegroundService : Service() {
     override fun onDestroy() {
         stopBeaconLoop()
         stopConnectionWatchdog()
+        ConnectionWatchdog.cancel(applicationContext)
         PairingHttpServer.stop()
         NodeBeacon.stop(applicationContext)
         ConnectionKeepAlive.release()

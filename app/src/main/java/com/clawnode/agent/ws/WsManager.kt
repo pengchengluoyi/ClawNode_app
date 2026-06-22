@@ -433,6 +433,13 @@ class WsManager(
                 }
                 if (!authHalted) setState(ConnectionState.Disconnected(t.message ?: "failure"))
                 if (!done.isCompleted) done.complete("failure: ${t.message}")
+                // 后台断线后立即尝试重连，不等待 connectLoop 退避（OEM 可能很快冻结协程）
+                scope.launch {
+                    if (!manualClosed && !authHalted && settings.isConnectable) {
+                        delay(500)
+                        reconnectIfNeeded()
+                    }
+                }
             }
         }
 
