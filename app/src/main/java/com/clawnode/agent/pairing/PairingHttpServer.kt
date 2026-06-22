@@ -12,6 +12,7 @@ import kotlinx.coroutines.withContext
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.PrintWriter
+import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 
@@ -26,6 +27,8 @@ object PairingHttpServer {
     private val gson = Gson()
     private val scope = CoroutineScope(Dispatchers.IO)
     private var acceptJob: Job? = null
+    @Volatile
+    private var listenSocket: ServerSocket? = null
 
     private data class PairRequestBody(
         @SerializedName("ws_url") val wsUrl: String? = null,
@@ -37,17 +40,23 @@ object PairingHttpServer {
         if (acceptJob?.isActive == true) return
         acceptJob = scope.launch {
             runCatching {
-                ServerSocket(PORT).use { server ->
-                    ClawLog.bp(TAG, "listen", "port=$PORT awaiting server pair push")
-                    while (isActive) {
-                        val socket = withContext(Dispatchers.IO) { server.accept() }
-                        launch { handleConnection(socket) }
-                    }
+                val server = ServerSocket().apply {
+                    reuseAddress = true
+                    bind(InetSocketAddress(PORT))
+                }
+                listenSocket = server
+                ClawLog.bp(TAG, "listen", "port=$PORT awaiting server pair push")
+                while (isActive) {
+                    val socket = withContext(Dispatchers.IO) { server.accept() }
+                    launch { handleConnection(socket) }
                 }
             }.onFailure { e ->
                 if (acceptJob?.isActive == true) {
                     ClawLog.e(TAG, "listen_fail", e.message ?: "", e)
                 }
+            }.also {
+                runCatching { listenSocket?.close() }
+                listenSocket = null
             }
         }
     }
@@ -55,6 +64,8 @@ object PairingHttpServer {
     fun stop() {
         acceptJob?.cancel()
         acceptJob = null
+        runCatching { listenSocket?.close() }
+        listenSocket = null
         ClawLog.bp(TAG, "stop", "pairing http server stopped")
     }
 

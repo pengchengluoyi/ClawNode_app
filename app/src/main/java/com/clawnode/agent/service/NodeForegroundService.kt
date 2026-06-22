@@ -35,7 +35,8 @@ import kotlinx.coroutines.launch
 class NodeForegroundService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private var beaconJob: Job? = null
+    private var settingsJob: Job? = null
+    private var beaconRefreshJob: Job? = null
     private var pairingServerUp = false
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -75,30 +76,45 @@ class NodeForegroundService : Service() {
     }
 
     private fun startBeaconLoop() {
-        if (beaconJob?.isActive == true) return
-        beaconJob = scope.launch {
-            val config = ConfigManager.get(applicationContext)
-            val model = "${Build.MANUFACTURER} ${Build.MODEL}".trim().ifBlank { "Android Node" }
+        if (settingsJob?.isActive == true) return
+        val config = ConfigManager.get(applicationContext)
+        val model = "${Build.MANUFACTURER} ${Build.MODEL}".trim().ifBlank { "Android Node" }
+
+        settingsJob = scope.launch {
+            config.settings.collect { settings ->
+                val paired = !settings.userUnpaired && settings.authToken.isNotBlank()
+                syncPairingServer(!paired)
+                NodeBeacon.start(applicationContext, config.defaultNodeSn, model, paired)
+            }
+        }
+
+        beaconRefreshJob = scope.launch {
             while (isActive) {
+                delay(BEACON_REFRESH_MS)
                 val settings = config.settings.first()
                 val paired = !settings.userUnpaired && settings.authToken.isNotBlank()
-                if (!paired && !pairingServerUp) {
-                    PairingHttpServer.start()
-                    pairingServerUp = true
-                    ClawLog.bp(TAG, "pair_listener", "started port=${PairingHttpServer.PORT}")
-                } else if (paired && pairingServerUp) {
-                    PairingHttpServer.stop()
-                    pairingServerUp = false
-                }
                 NodeBeacon.start(applicationContext, config.defaultNodeSn, model, paired)
-                delay(BEACON_REFRESH_MS)
             }
         }
     }
 
+    private fun syncPairingServer(needListener: Boolean) {
+        if (needListener && !pairingServerUp) {
+            PairingHttpServer.start()
+            pairingServerUp = true
+            ClawLog.bp(TAG, "pair_listener", "started port=${PairingHttpServer.PORT}")
+        } else if (!needListener && pairingServerUp) {
+            PairingHttpServer.stop()
+            pairingServerUp = false
+        }
+    }
+
     private fun stopBeaconLoop() {
-        beaconJob?.cancel()
-        beaconJob = null
+        settingsJob?.cancel()
+        settingsJob = null
+        beaconRefreshJob?.cancel()
+        beaconRefreshJob = null
+        pairingServerUp = false
     }
 
     private fun promoteToForeground() {

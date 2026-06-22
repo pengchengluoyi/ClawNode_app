@@ -13,6 +13,7 @@ import com.clawnode.agent.core.ConfigManager
 import com.clawnode.agent.core.NodeStatusBus
 import com.clawnode.agent.service.NodeForegroundService
 import com.clawnode.agent.pairing.PairingBridge
+import com.clawnode.agent.pairing.PairingHttpServer
 import com.clawnode.agent.system.AppController
 import com.clawnode.agent.system.WakeUpActivity
 import com.clawnode.agent.vision.MediaProjectionHolder
@@ -77,6 +78,7 @@ class ActionExecutorService : AccessibilityService() {
                     model = meta.model,
                     paired = false,
                 )
+                PairingHttpServer.start()
             },
         )
         wsManager.setDeviceMeta(buildDeviceMeta())
