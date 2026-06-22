@@ -14,7 +14,9 @@ import com.clawnode.agent.R
 import com.clawnode.agent.core.ClawLog
 import com.clawnode.agent.core.ConfigManager
 import com.clawnode.agent.discovery.NodeBeacon
+import com.clawnode.agent.action.ActionExecutorService
 import com.clawnode.agent.pairing.PairingHttpServer
+import com.clawnode.agent.ws.ConnectionKeepAlive
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -37,6 +39,7 @@ class NodeForegroundService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var settingsJob: Job? = null
     private var beaconRefreshJob: Job? = null
+    private var connectionWatchdogJob: Job? = null
     private var pairingServerUp = false
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -59,8 +62,10 @@ class NodeForegroundService : Service() {
             }
             else -> {
                 ClawLog.bp(TAG, "onStartCommand", "enter foreground")
+                ConnectionKeepAlive.acquire(applicationContext)
                 promoteToForeground()
                 startBeaconLoop()
+                startConnectionWatchdog()
             }
         }
         return START_STICKY
@@ -68,8 +73,10 @@ class NodeForegroundService : Service() {
 
     override fun onDestroy() {
         stopBeaconLoop()
+        stopConnectionWatchdog()
         PairingHttpServer.stop()
         NodeBeacon.stop(applicationContext)
+        ConnectionKeepAlive.release()
         scope.cancel()
         ClawLog.bp(TAG, "onDestroy", "node foreground service destroyed")
         super.onDestroy()
@@ -117,6 +124,23 @@ class NodeForegroundService : Service() {
         pairingServerUp = false
     }
 
+    /** 后台周期性检查 WS，避免 OEM 冻结进程后长时间离线 */
+    private fun startConnectionWatchdog() {
+        if (connectionWatchdogJob?.isActive == true) return
+        connectionWatchdogJob = scope.launch {
+            while (isActive) {
+                delay(CONNECTION_WATCHDOG_MS)
+                ConnectionKeepAlive.acquire(applicationContext)
+                ActionExecutorService.instance?.reconnectWebSocketIfNeeded()
+            }
+        }
+    }
+
+    private fun stopConnectionWatchdog() {
+        connectionWatchdogJob?.cancel()
+        connectionWatchdogJob = null
+    }
+
     private fun promoteToForeground() {
         val channelId = ensureChannel()
         val notification: Notification = NotificationCompat.Builder(this, channelId)
@@ -159,6 +183,7 @@ class NodeForegroundService : Service() {
         private const val NOTIF_ID = 0xC1A5
         private const val ACTION_STOP = "com.clawnode.agent.STOP_NODE_FG"
         private const val BEACON_REFRESH_MS = 30_000L
+        private const val CONNECTION_WATCHDOG_MS = 25_000L
 
         fun start(context: Context) {
             ClawLog.bp(TAG, "start", "launching node foreground service")

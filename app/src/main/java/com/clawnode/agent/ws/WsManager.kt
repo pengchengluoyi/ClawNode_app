@@ -1,6 +1,6 @@
 package com.clawnode.agent.ws
 
-import com.clawnode.agent.core.ClawLog
+import com.clawnode.agent.ClawNodeApp
 import com.clawnode.agent.core.ConnectionState
 import com.clawnode.agent.core.NodeConfig
 import com.clawnode.agent.core.NodeSettings
@@ -164,6 +164,25 @@ class WsManager(
         manualClosed = false
         connectJob = scope.launch { connectLoop() }
     }
+
+    /** 前台服务 / 亮屏回调：WS 已断则立即重连（含打断退避等待） */
+    fun reconnectIfNeeded() {
+        if (!settings.isConnectable || authHalted || manualClosed) return
+        if (webSocket != null) {
+            ClawLog.bp(TAG, "reconnect_skip", "already connected")
+            return
+        }
+        if (connectJob?.isActive == true) {
+            ClawLog.bp(TAG, "reconnect_interrupt", "cancel backoff and restart ws")
+            stopInternal(resetAuthHalt = false)
+            manualClosed = false
+        }
+        ClawLog.bp(TAG, "reconnect_wake", "restart ws")
+        reconnectAttempt = 0
+        start()
+    }
+
+    fun isConnected(): Boolean = webSocket != null
 
     private fun restart() {
         ClawLog.bp(TAG, "restart", "stop then start")
@@ -365,6 +384,7 @@ class WsManager(
                 ClawLog.bp(TAG, "register_sent", "sn=${current.nodeSn} ok=$regOk")
 
                 startHeartbeat(current.nodeSn, myEpoch)
+                ConnectionKeepAlive.acquire(ClawNodeApp.instance.applicationContext)
             }
 
             override fun onMessage(ws: WebSocket, text: String) {
@@ -497,6 +517,9 @@ class WsManager(
         heartbeatSeq += 1
         val json = gson.toJson(HeartbeatFrame(data = HeartbeatFrame.Data(sn = sn)))
         val ok = ws.send(json)
+        if (ok) {
+            ConnectionKeepAlive.acquire(ClawNodeApp.instance.applicationContext)
+        }
         ClawLog.bp(TAG, "heartbeat", "seq=$heartbeatSeq sn=$sn ok=$ok")
         return ok
     }

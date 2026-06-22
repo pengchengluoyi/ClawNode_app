@@ -1,7 +1,11 @@
 package com.clawnode.agent.action
 
 import android.accessibilityservice.AccessibilityService
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.os.Build
 import android.graphics.Bitmap
 import android.hardware.HardwareBuffer
 import android.view.Display
@@ -19,7 +23,7 @@ import com.clawnode.agent.system.WakeUpActivity
 import com.clawnode.agent.vision.MediaProjectionHolder
 import com.clawnode.agent.vision.StreamBridge
 import com.clawnode.agent.vision.VisionManager
-import com.clawnode.agent.ws.WsManager
+import com.clawnode.agent.ws.ConnectionKeepAlive
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -44,6 +48,7 @@ class ActionExecutorService : AccessibilityService() {
     private lateinit var visionManager: VisionManager
     private lateinit var dispatcher: CommandDispatcher
     private lateinit var appController: AppController
+    private var screenWakeReceiver: BroadcastReceiver? = null
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -124,6 +129,40 @@ class ActionExecutorService : AccessibilityService() {
         ConfigManager.get(applicationContext).settings
             .onEach { wsManager.applySettings(it) }
             .launchIn(scope)
+
+        registerScreenWakeReceiver()
+    }
+
+    /** 供 NodeForegroundService 后台看门狗调用 */
+    fun reconnectWebSocketIfNeeded() {
+        if (::wsManager.isInitialized) wsManager.reconnectIfNeeded()
+    }
+
+    private fun registerScreenWakeReceiver() {
+        if (screenWakeReceiver != null) return
+        screenWakeReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                when (intent?.action) {
+                    Intent.ACTION_SCREEN_ON,
+                    Intent.ACTION_USER_PRESENT -> wsManager.reconnectIfNeeded()
+                }
+            }
+        }
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_USER_PRESENT)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(screenWakeReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("DEPRECATION")
+            registerReceiver(screenWakeReceiver, filter)
+        }
+    }
+
+    private fun unregisterScreenWakeReceiver() {
+        screenWakeReceiver?.let { runCatching { unregisterReceiver(it) } }
+        screenWakeReceiver = null
     }
 
     private fun launchWakeUp() {
@@ -230,6 +269,8 @@ class ActionExecutorService : AccessibilityService() {
 
     private fun teardown() {
         ClawLog.bp(TAG, "teardown", "releasing node resources")
+        unregisterScreenWakeReceiver()
+        ConnectionKeepAlive.release()
         if (instance === this) instance = null
         NodeForegroundService.stop(applicationContext)
         StreamBridge.wsRef = null
