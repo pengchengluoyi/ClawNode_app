@@ -16,6 +16,7 @@ import com.clawnode.agent.core.ConfigManager
 import com.clawnode.agent.discovery.NodeBeacon
 import com.clawnode.agent.action.ActionExecutorService
 import com.clawnode.agent.pairing.PairingHttpServer
+import com.clawnode.agent.ws.ConnectionWatchdog
 import com.clawnode.agent.ws.ConnectionKeepAlive
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
