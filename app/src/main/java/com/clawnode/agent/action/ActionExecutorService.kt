@@ -20,6 +20,7 @@ import com.clawnode.agent.pairing.PairingBridge
 import com.clawnode.agent.pairing.PairingHttpServer
 import com.clawnode.agent.system.AppController
 import com.clawnode.agent.system.ClipboardController
+import com.clawnode.agent.system.MediaProjectionRequestActivity
 import com.clawnode.agent.system.ShellController
 import com.clawnode.agent.update.AppUpdateManager
 import com.clawnode.agent.model.NodeResponse

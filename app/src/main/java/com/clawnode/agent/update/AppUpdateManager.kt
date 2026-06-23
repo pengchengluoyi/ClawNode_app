@@ -271,9 +271,9 @@ object AppUpdateManager {
             val file = downloadApk(context, info.downloadUrl, info.assetName ?: "ClawNode.apk")
             reportSelf(NodeResponse.STAGE_DOWNLOADED, 100, "download complete", info.latestVersion)
 
-            reportSelf(NodeResponse.STAGE_INSTALLING, message = "installing", info.latestVersion)
+            reportSelf(NodeResponse.STAGE_INSTALLING, message = "installing", version = info.latestVersion)
             installApk(context, file)
-            reportSelf(NodeResponse.STAGE_AWAITING_CONFIRM, message = "awaiting user confirmation", info.latestVersion)
+            reportSelf(NodeResponse.STAGE_AWAITING_CONFIRM, message = "awaiting user confirmation", version = info.latestVersion)
             true
         }.getOrElse { e ->
             ClawLog.w(TAG, "auto_update_fail", e.message ?: "")
