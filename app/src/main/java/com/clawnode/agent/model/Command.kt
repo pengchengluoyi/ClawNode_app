@@ -45,6 +45,7 @@ data class Command(
         const val GET_SCREENSHOT = "GET_SCREENSHOT"
         const val START_STREAM = "START_STREAM"
         const val STOP_STREAM = "STOP_STREAM"
+        const val GET_FOREGROUND_APP = "GET_FOREGROUND_APP"
         const val KEY_EVENT = "KEY_EVENT"
         const val OPEN_APP = "OPEN_APP"
         const val CLOSE_APP = "CLOSE_APP"

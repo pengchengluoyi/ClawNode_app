@@ -48,6 +48,7 @@ class CommandDispatcher(
             Command.GET_SCREENSHOT -> vision.captureSingleShot(cmd)
             Command.START_STREAM -> vision.startStream(cmd)
             Command.STOP_STREAM -> vision.stopStream(cmd)
+            Command.GET_FOREGROUND_APP -> handleGetForegroundApp(cmd)
             Command.KEY_EVENT -> handleKeyEvent(cmd)
             Command.OPEN_APP, Command.START_APP -> handleOpenApp(cmd)
             Command.CLOSE_APP, Command.STOP_APP -> handleCloseApp(cmd)
@@ -174,6 +175,25 @@ class CommandDispatcher(
                 ClawLog.e(TAG, "wake_up_fail", "trace=${cmd.traceId}", e)
                 ws.sendChecked(NodeResponse.actionResult(cmd.traceId, false, e.message ?: "wake-up failed"))
             }
+    }
+
+    private fun handleGetForegroundApp(cmd: Command) {
+        val pkg = actionExecutorForegroundPackage()
+        ws.sendChecked(
+            NodeResponse.actionResult(
+                cmd.traceId,
+                pkg.isNotBlank(),
+                pkg.ifBlank { "foreground package unavailable" }
+            )
+        )
+    }
+
+    private fun actionExecutorForegroundPackage(): String {
+        return try {
+            ActionExecutorService.instance?.currentForegroundPackage().orEmpty()
+        } catch (_: Exception) {
+            ""
+        }
     }
 
     companion object {

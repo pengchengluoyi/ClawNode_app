@@ -52,6 +52,8 @@ class ActionExecutorService : AccessibilityService() {
     private lateinit var appController: AppController
     private lateinit var shellController: ShellController
     private var screenWakeReceiver: BroadcastReceiver? = null
+    @Volatile
+    private var foregroundPackageName: String = ""
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -256,11 +258,18 @@ class ActionExecutorService : AccessibilityService() {
 
     class ScreenshotError(message: String) : Exception(message)
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) { /* no-op */ }
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        val pkg = event?.packageName?.toString()?.trim().orEmpty()
+        if (pkg.isNotBlank()) {
+            foregroundPackageName = pkg
+        }
+    }
 
     override fun onInterrupt() {
         ClawLog.w(TAG, "onInterrupt", "accessibility interrupted")
     }
+
+    fun currentForegroundPackage(): String = foregroundPackageName.trim()
 
     override fun onUnbind(intent: Intent?): Boolean {
         ClawLog.w(TAG, "onUnbind", "accessibility unbind")
