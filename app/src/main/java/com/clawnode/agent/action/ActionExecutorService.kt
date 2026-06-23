@@ -19,6 +19,7 @@ import com.clawnode.agent.service.NodeForegroundService
 import com.clawnode.agent.pairing.PairingBridge
 import com.clawnode.agent.pairing.PairingHttpServer
 import com.clawnode.agent.system.AppController
+import com.clawnode.agent.system.ShellController
 import com.clawnode.agent.system.WakeUpActivity
 import com.clawnode.agent.vision.MediaProjectionHolder
 import com.clawnode.agent.vision.StreamBridge
@@ -49,6 +50,7 @@ class ActionExecutorService : AccessibilityService() {
     private lateinit var visionManager: VisionManager
     private lateinit var dispatcher: CommandDispatcher
     private lateinit var appController: AppController
+    private lateinit var shellController: ShellController
     private var screenWakeReceiver: BroadcastReceiver? = null
 
     override fun onServiceConnected() {
@@ -61,6 +63,7 @@ class ActionExecutorService : AccessibilityService() {
 
         gestureController = GestureController(this)
         appController = AppController(applicationContext, this)
+        shellController = ShellController(applicationContext)
         val configManager = ConfigManager.get(applicationContext)
         wsManager = WsManager(
             scope,
@@ -120,6 +123,9 @@ class ActionExecutorService : AccessibilityService() {
                 LogUploadManager.uploadWithCurrentSettings(applicationContext, minutes).let {
                     it.success to it.message
                 }
+            },
+            onRunShell = { command ->
+                shellController.run(command).let { Triple(it.success, it.stdout, it.stderr) }
             },
         )
 

@@ -33,7 +33,9 @@ data class Command(
         // OPEN_APP 可选 Activity 全类名
         @SerializedName("activity") val activity: String? = null,
         /** EXPORT_LOGS：最近 N 分钟，默认 5 */
-        @SerializedName("minutes") val minutes: Int? = null
+        @SerializedName("minutes") val minutes: Int? = null,
+        /** RUN_SHELL：受限 shell 命令 */
+        @SerializedName("command") val command: String? = null
     )
 
     companion object ActionType {
@@ -53,5 +55,6 @@ data class Command(
         const val KILL_APP = "KILL_APP"
         const val CLEAR_APP_CACHE = "CLEAR_APP_CACHE"
         const val EXPORT_LOGS = "EXPORT_LOGS"
+        const val RUN_SHELL = "RUN_SHELL"
     }
 }

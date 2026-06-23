@@ -116,5 +116,45 @@ object SystemController {
         )
     }
 
+    /**
+     * 尝试跳转国产 ROM 的「自启动 / 后台管理」设置页。
+     *
+     * 原生 Doze 之上，HONOR/华为/小米/OV 等还有自己的进程冻结策略，仅靠电池
+     * 白名单不足，需用户手动开自启动。各厂商无统一 API，这里逐个尝试已知 Intent，
+     * 全部失败则 fallback 到应用详情页（用户可从那里进后台限制设置）。
+     */
+    fun openAutoStartSettings(context: Context) {
+        val candidates = listOf(
+            // 小米 MIUI
+            "com.miui.securitycenter" to "com.miui.permcenter.autostart.AutoStartManagementActivity",
+            // 华为 / 荣耀
+            "com.huawei.systemmanager" to "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity",
+            "com.huawei.systemmanager" to "com.huawei.systemmanager.optimize.process.ProtectActivity",
+            // OPPO / realme
+            "com.coloros.safecenter" to "com.coloros.safecenter.permission.startup.StartupAppListActivity",
+            "com.oppo.safe" to "com.oppo.safe.permission.startup.StartupAppListActivity",
+            // vivo
+            "com.vivo.permissionmanager" to "com.vivo.permissionmanager.activity.BgStartUpManagerActivity",
+            // 三星
+            "com.samsung.android.lool" to "com.samsung.android.sm.ui.battery.BatteryActivity",
+        )
+        for ((pkg, cls) in candidates) {
+            val ok = runCatching {
+                context.startActivity(
+                    Intent().setComponent(ComponentName(pkg, cls))
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+                true
+            }.getOrDefault(false)
+            if (ok) {
+                ClawLog.bp(TAG, "open_autostart", "$pkg/$cls")
+                return
+            }
+        }
+        // 全部失败：回退到应用详情页
+        ClawLog.bp(TAG, "open_autostart", "fallback=app_details")
+        openAppDetailsSettings(context)
+    }
+
     private const val TAG = "SystemController"
 }

@@ -51,6 +51,17 @@ data class NodeResponse(
             )
         )
 
+        fun shellResult(traceId: String, success: Boolean, stdout: String, stderr: String = "") = NodeResponse(
+            traceId = traceId,
+            type = TYPE_ACTION_RESULT,
+            data = mapOf(
+                "status" to if (success) STATUS_SUCCESS else STATUS_FAILED,
+                "message" to stdout,
+                "stdout" to stdout,
+                "stderr" to stderr,
+            )
+        )
+
         fun screenshot(traceId: String, base64: String, format: String = "jpeg") = NodeResponse(
             traceId = traceId,
             type = TYPE_SCREENSHOT_RESULT,

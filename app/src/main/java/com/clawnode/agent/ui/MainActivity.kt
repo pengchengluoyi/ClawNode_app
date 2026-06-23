@@ -61,6 +61,7 @@ class MainActivity : AppCompatActivity() {
         observeConnectionState()
         requestNotificationPermissionIfNeeded()
         promptInstallPermissionIfNeeded()
+        promptBackgroundProtectionIfNeeded()
     }
 
     override fun onResume() {
@@ -111,7 +112,12 @@ class MainActivity : AppCompatActivity() {
             SystemController.openNotificationSettings(this)
         }
         binding.btnBattery.setOnClickListener {
-            SystemController.requestIgnoreBatteryOptimizations(this)
+            // 复用后台保活引导（含电池优化 + 自启动两步），已授权则直接给自启动入口
+            if (SystemController.isBatteryOptimizationIgnored(this)) {
+                SystemController.openAutoStartSettings(this)
+            } else {
+                promptBackgroundProtectionDialog()
+            }
         }
         binding.btnScreenCapture.setOnClickListener {
             startActivity(
@@ -253,6 +259,39 @@ class MainActivity : AppCompatActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !AppUpdateManager.canInstallPackages(this)) {
             binding.btnInstallPerm.visibility = View.VISIBLE
         }
+    }
+
+    /**
+     * 后台保活引导（解决熄屏挂机掉线）。
+     *
+     * Doze 深度休眠会切断后台应用网络，国产 ROM 还会冻结进程。仅靠前台服务 +
+     * watchdog 无法对抗，必须让用户：① 加入电池优化白名单（解除 Doze 网络限制）；
+     * ② 国产 ROM 额外开自启动。未授权电池白名单时弹窗引导，授权后不再打扰。
+     */
+    private fun promptBackgroundProtectionIfNeeded() {
+        if (SystemController.isBatteryOptimizationIgnored(this)) return
+        promptBackgroundProtectionDialog()
+    }
+
+    private fun promptBackgroundProtectionDialog() {
+        AlertDialog.Builder(this)
+            .setTitle("后台保活（强烈建议）")
+            .setMessage(
+                "为保证熄屏挂机时设备保持在线，需要两步设置：\n\n" +
+                    "① 电池优化：选择「不优化 / 无限制」——解除系统对后台网络的切断；\n" +
+                    "② 自启动 / 后台管理：国产手机（小米/华为/荣耀/OPPO/vivo）还需手动开启" +
+                    "「允许自启动」「允许后台活动」，否则进程会被冻结。\n\n" +
+                    "不设置的话，熄屏几分钟后设备就会离线，需手动解锁亮屏才恢复。"
+            )
+            .setPositiveButton("①设置电池优化") { _, _ ->
+                runCatching { SystemController.requestIgnoreBatteryOptimizations(this) }
+                    .onFailure { SystemController.openAppDetailsSettings(this) }
+            }
+            .setNeutralButton("②自启动设置") { _, _ ->
+                SystemController.openAutoStartSettings(this)
+            }
+            .setNegativeButton("稍后", null)
+            .show()
     }
 
     private fun showRestrictedSettingsGuide() {

@@ -24,6 +24,7 @@ class CommandDispatcher(
     private val onKillApp: (String) -> Pair<Boolean, String>,
     private val onClearAppCache: (String) -> Pair<Boolean, String>,
     private val onExportLogs: suspend (Int) -> Pair<Boolean, String>,
+    private val onRunShell: (String) -> Triple<Boolean, String, String>,
 ) {
 
     fun dispatch(cmd: Command) {
@@ -53,6 +54,7 @@ class CommandDispatcher(
             Command.KILL_APP -> handleKillApp(cmd)
             Command.CLEAR_APP_CACHE -> handleClearCache(cmd)
             Command.EXPORT_LOGS -> handleExportLogs(cmd)
+            Command.RUN_SHELL -> handleRunShell(cmd)
             else -> ws.sendChecked(
                 NodeResponse.actionResult(cmd.traceId, false, "unknown action_type=${cmd.actionType}")
             )
@@ -108,6 +110,18 @@ class CommandDispatcher(
             ?: LogUploadManager.DEFAULT_WINDOW_MINUTES
         val (ok, msg) = runCatching { onExportLogs(minutes) }.getOrElse { false to (it.message ?: "export error") }
         ws.sendChecked(NodeResponse.actionResult(cmd.traceId, ok, msg))
+    }
+
+    private fun handleRunShell(cmd: Command) {
+        val command = cmd.payload?.command
+        if (command.isNullOrBlank()) {
+            ws.sendChecked(NodeResponse.actionResult(cmd.traceId, false, "RUN_SHELL requires command"))
+            return
+        }
+        val (ok, stdout, stderr) = runCatching { onRunShell(command) }.getOrElse {
+            Triple(false, "", it.message ?: "shell error")
+        }
+        ws.sendChecked(NodeResponse.shellResult(cmd.traceId, ok, stdout, stderr))
     }
 
     private fun handleKeyEvent(cmd: Command) {
