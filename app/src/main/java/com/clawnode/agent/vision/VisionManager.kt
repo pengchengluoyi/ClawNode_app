@@ -86,20 +86,20 @@ class VisionManager(
         if (!MediaProjectionHolder.hasAuthorization()) {
             val intent = Intent(context, MediaProjectionRequestActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-.putExtra(MediaProjectionRequestActivity.EXTRA_TRACE_ID, cmd.safeTraceId)
-            .putExtra(MediaProjectionRequestActivity.EXTRA_FPS, fps)
-            .putExtra(MediaProjectionRequestActivity.EXTRA_MODE, MediaProjectionRequestActivity.MODE_STREAM)
-        context.startActivity(intent)
-        return
-    }
+                .putExtra(MediaProjectionRequestActivity.EXTRA_TRACE_ID, cmd.safeTraceId)
+                .putExtra(MediaProjectionRequestActivity.EXTRA_FPS, fps)
+                .putExtra(MediaProjectionRequestActivity.EXTRA_MODE, MediaProjectionRequestActivity.MODE_STREAM)
+            context.startActivity(intent)
+            return
+        }
 
-    StreamForegroundService.start(context, cmd.safeTraceId, fps)
+        StreamForegroundService.start(context, cmd.safeTraceId, fps)
     }
 
     fun stopStream(cmd: Command?) {
-        ClawLog.bp(TAG, "stream_stop", "trace=${cmd?.traceId}")
+        ClawLog.bp(TAG, "stream_stop", "trace=${cmd?.safeTraceId}")
         StreamForegroundService.stop(context)
-        cmd?.let { ws.sendChecked(NodeResponse.streamStatus(it.traceId, true, "stream stopped")) }
+        cmd?.let { ws.sendChecked(NodeResponse.streamStatus(it.safeTraceId, true, "stream stopped")) }
     }
 
     companion object {
