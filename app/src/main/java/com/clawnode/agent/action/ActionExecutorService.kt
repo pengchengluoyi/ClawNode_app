@@ -25,6 +25,7 @@ import com.clawnode.agent.vision.MediaProjectionHolder
 import com.clawnode.agent.vision.StreamBridge
 import com.clawnode.agent.vision.VisionManager
 import com.clawnode.agent.ws.ConnectionKeepAlive
+import com.clawnode.agent.ws.NetworkMonitor
 import com.clawnode.agent.ws.WsManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
@@ -52,6 +53,7 @@ class ActionExecutorService : AccessibilityService() {
     private lateinit var appController: AppController
     private lateinit var shellController: ShellController
     private var screenWakeReceiver: BroadcastReceiver? = null
+    private var networkMonitor: NetworkMonitor? = null
     @Volatile
     private var foregroundPackageName: String = ""
 
@@ -140,6 +142,7 @@ class ActionExecutorService : AccessibilityService() {
             .launchIn(scope)
 
         registerScreenWakeReceiver()
+        registerNetworkMonitor()
     }
 
     /** 供 NodeForegroundService 后台看门狗调用 */
@@ -172,6 +175,18 @@ class ActionExecutorService : AccessibilityService() {
     private fun unregisterScreenWakeReceiver() {
         screenWakeReceiver?.let { runCatching { unregisterReceiver(it) } }
         screenWakeReceiver = null
+    }
+
+    private fun registerNetworkMonitor() {
+        if (networkMonitor != null) return
+        networkMonitor = NetworkMonitor(applicationContext) { hasNetwork ->
+            if (::wsManager.isInitialized) wsManager.onNetworkChanged(hasNetwork)
+        }.also { it.start() }
+    }
+
+    private fun unregisterNetworkMonitor() {
+        networkMonitor?.let { runCatching { it.stop() } }
+        networkMonitor = null
     }
 
     private fun launchWakeUp() {
@@ -286,6 +301,7 @@ class ActionExecutorService : AccessibilityService() {
     private fun teardown() {
         ClawLog.bp(TAG, "teardown", "releasing node resources")
         unregisterScreenWakeReceiver()
+        unregisterNetworkMonitor()
         ConnectionKeepAlive.release()
         if (instance === this) instance = null
         NodeForegroundService.stop(applicationContext)

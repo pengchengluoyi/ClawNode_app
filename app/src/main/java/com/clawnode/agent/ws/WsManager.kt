@@ -167,8 +167,7 @@ class WsManager(
     }
 
     /** 前台服务 / 亮屏回调：WS 已断则立即重连（含打断退避等待） */
-    fun reconnectIfNeeded() {
-        if (!settings.isConnectable || authHalted || manualClosed) return
+    fun reconnectIfNeeded() {        if (!settings.isConnectable || authHalted || manualClosed) return
         if (webSocket != null) {
             ClawLog.bp(TAG, "reconnect_skip", "already connected")
             return
@@ -184,6 +183,29 @@ class WsManager(
     }
 
     fun isConnected(): Boolean = webSocket != null
+
+    /**
+     * 系统默认网络切换回调（WiFi↔蜂窝、断网恢复）。
+     * 切换后旧 TCP 多半已失效但 OkHttp 可能尚未感知，故强制重建而非依赖 [reconnectIfNeeded]
+     * 的「已连接则跳过」判断。
+     */
+    fun onNetworkChanged(hasNetwork: Boolean) {
+        if (!hasNetwork) {
+            ClawLog.bp(TAG, "net_lost", "network lost, await re-available")
+            return
+        }
+        if (!settings.isConnectable || authHalted || manualClosed || unpairedHalt) {
+            ClawLog.bp(
+                TAG,
+                "net_change_skip",
+                "connectable=${settings.isConnectable} authHalted=$authHalted manual=$manualClosed unpaired=$unpairedHalt",
+            )
+            return
+        }
+        ClawLog.bp(TAG, "net_change", "force reconnect on network switch")
+        reconnectAttempt = 0
+        restart()
+    }
 
     private fun restart() {
         ClawLog.bp(TAG, "restart", "stop then start")
