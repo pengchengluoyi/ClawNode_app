@@ -8,6 +8,7 @@ import com.clawnode.agent.ws.WsManager
 import kotlinx.coroutines.CoroutineScope
 import com.clawnode.agent.log.LogUploadManager
 import kotlinx.coroutines.launch
+import com.clawnode.agent.system.AppController.InstalledApp as AppInfo
 
 /**
  * 指令分发器。
@@ -27,6 +28,7 @@ class CommandDispatcher(
     private val onRunShell: (String) -> Triple<Boolean, String, String>,
     private val onInstallApk: suspend (traceId: String, url: String, fileName: String?) -> Pair<Boolean, String>,
     private val onSetClipboard: (String) -> Pair<Boolean, String>,
+    private val onGetInstalledApps: () -> List<com.clawnode.agent.system.AppController.InstalledApp>,
 ) {
 
     fun dispatch(cmd: Command) {
@@ -69,6 +71,7 @@ class CommandDispatcher(
             Command.RUN_SHELL, "RUN_SHELL", "SHELL" -> handleRunShell(cmd)
             Command.INSTALL_APK, "INSTALL_APK", "INSTALLAPK" -> handleInstallApk(cmd)
             Command.SET_CLIPBOARD, "SET_CLIPBOARD", "CLIPBOARD" -> handleSetClipboard(cmd)
+            Command.GET_INSTALLED_APPS, "GET_INSTALLED_APPS" -> handleGetInstalledApps(cmd)
             else -> ws.sendChecked(
                 NodeResponse.actionResult(cmd.safeTraceId, false, "unknown command=${cmd.command} (effective=$key)")
             )
@@ -241,6 +244,18 @@ class CommandDispatcher(
         } catch (_: Exception) {
             ""
         }
+    }
+
+    private fun handleGetInstalledApps(cmd: Command) {
+        val apps = try {
+            onGetInstalledApps()
+        } catch (e: Throwable) {
+            emptyList()
+        }
+        // Send structured result
+        ws.sendChecked(NodeResponse.installedApps(cmd.safeTraceId, apps.map {
+            NodeResponse.InstalledApp(it.packageName, it.label)
+        }))
     }
 
     companion object {

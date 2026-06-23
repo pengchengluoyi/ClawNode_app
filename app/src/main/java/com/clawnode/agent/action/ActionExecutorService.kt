@@ -20,7 +20,6 @@ import com.clawnode.agent.pairing.PairingBridge
 import com.clawnode.agent.pairing.PairingHttpServer
 import com.clawnode.agent.system.AppController
 import com.clawnode.agent.system.ClipboardController
-import com.clawnode.agent.system.MediaProjectionRequestActivity
 import com.clawnode.agent.system.ShellController
 import com.clawnode.agent.update.AppUpdateManager
 import com.clawnode.agent.model.NodeResponse
@@ -73,16 +72,11 @@ class ActionExecutorService : AccessibilityService() {
         ClawLog.bp(TAG, "service_connected", "accessibility service ready")
         MediaProjectionHolder.restoreFromDisk(applicationContext)
 
-        // After restart/update, if user previously granted screen capture, auto re-request to refresh token.
-        // This makes "authorize once" experience: system dialog may appear once; no need to click in-app buttons again.
-        if (!MediaProjectionHolder.hasAuthorization() && MediaProjectionHolder.hasPriorGrant(applicationContext)) {
-            try {
-                val i = Intent(applicationContext, MediaProjectionRequestActivity::class.java)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    .putExtra(MediaProjectionRequestActivity.EXTRA_MODE, MediaProjectionRequestActivity.MODE_AUTHORIZE)
-                applicationContext.startActivity(i)
-            } catch (_: Exception) {}
-        }
+        // Note: we intentionally do NOT auto-launch MediaProjectionRequestActivity here.
+        // Auto-launching the system dialog from service connect (after restart/crash) or during
+        // command execution leads to surprising permission prompts while the agent is working.
+        // Users should (re)authorize from the MainActivity UI when background screenshots are needed.
+        // The "ever_granted" flag is still restored for UI state hints.
 
         NodeForegroundService.start(applicationContext)
 
@@ -191,6 +185,9 @@ class ActionExecutorService : AccessibilityService() {
             },
             onSetClipboard = { text ->
                 clipboardController.setText(text).let { it.success to it.message }
+            },
+            onGetInstalledApps = {
+                appController.listLaunchableApps()
             },
         )
 

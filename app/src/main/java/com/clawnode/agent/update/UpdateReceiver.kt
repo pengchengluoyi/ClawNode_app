@@ -20,18 +20,10 @@ class UpdateReceiver : BroadcastReceiver() {
                 ClawLog.w("UpdateReceiver", "start_fg_failed", e.message ?: "")
             }
 
-            // If screen capture was previously authorized, auto re-launch the request so capture works
-            // immediately after update without user manually opening the app and clicking buttons.
-            try {
-                if (com.clawnode.agent.vision.MediaProjectionHolder.hasPriorGrant(context.applicationContext) &&
-                    !com.clawnode.agent.vision.MediaProjectionHolder.hasAuthorization()) {
-                    val i = Intent(context.applicationContext, com.clawnode.agent.system.MediaProjectionRequestActivity::class.java)
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        .putExtra(com.clawnode.agent.system.MediaProjectionRequestActivity.EXTRA_MODE,
-                            com.clawnode.agent.system.MediaProjectionRequestActivity.MODE_AUTHORIZE)
-                    context.applicationContext.startActivity(i)
-                }
-            } catch (_: Exception) {}
+            // We no longer auto-launch the screen capture authorization dialog from the update receiver.
+            // This avoids the system prompt appearing "out of nowhere" after an app update while
+            // the agent may be executing instructions. The user can re-authorize from the app UI.
+            // NodeForegroundService is still started so the node can reconnect.
         }
     }
 }

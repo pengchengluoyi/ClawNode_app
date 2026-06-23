@@ -49,7 +49,9 @@ class StreamForegroundService : Service() {
 
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
-            // 用户在系统层停止投影时也要彻底清理
+            // 用户或系统停止了投影；清理 holder 中的实例，后续需要重新授权
+            ClawLog.w(TAG, "projection_stopped", "trace=$traceId")
+            MediaProjectionHolder.clearProjection()
             releaseCapture()
             stopSelf()
         }
@@ -96,20 +98,29 @@ class StreamForegroundService : Service() {
     }
 
     private fun startCapture() {
-        val data = MediaProjectionHolder.resultData
-        val code = MediaProjectionHolder.resultCode
-        if (data == null) {
-            sendStreamStatus(false, "no media projection authorization")
-            stopSelf()
-            return
-        }
-
         val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        val mp = mpm.getMediaProjection(code, data)
+
+        // Reuse live projection if available (e.g. from a prior screenshot fallback authorization).
+        // Otherwise consume the one-time resultData exactly once.
+        var mp = MediaProjectionHolder.projection
         if (mp == null) {
-            sendStreamStatus(false, "getMediaProjection returned null")
-            stopSelf()
-            return
+            val data = MediaProjectionHolder.resultData
+            val code = MediaProjectionHolder.resultCode
+            if (data == null) {
+                sendStreamStatus(false, "no media projection authorization")
+                stopSelf()
+                return
+            }
+            mp = mpm.getMediaProjection(code, data)
+            if (mp == null) {
+                sendStreamStatus(false, "getMediaProjection returned null")
+                stopSelf()
+                return
+            }
+            MediaProjectionHolder.projection = mp
+            MediaProjectionHolder.resultCode = 0
+            MediaProjectionHolder.resultData = null
+            ClawLog.bp(TAG, "projection_created_from_result", "trace=$traceId (stream)")
         }
         projection = mp
         MediaProjectionHolder.projection = mp
@@ -183,6 +194,8 @@ class StreamForegroundService : Service() {
     }
 
     private fun releaseCapture() {
+        // Release only this stream's VD/reader. Keep the shared MediaProjection alive so that
+        // other features (e.g. on-demand background screenshots) continue to work without re-auth.
         runCatching { virtualDisplay?.release() }
         virtualDisplay = null
         runCatching { imageReader?.setOnImageAvailableListener(null, null) }
@@ -190,10 +203,9 @@ class StreamForegroundService : Service() {
         imageReader = null
         runCatching {
             projection?.unregisterCallback(projectionCallback)
-            projection?.stop()
         }
         projection = null
-        MediaProjectionHolder.projection = null
+        // Do not clear MediaProjectionHolder.projection here; only the system onStop or explicit revoke should.
     }
 
     override fun onDestroy() {

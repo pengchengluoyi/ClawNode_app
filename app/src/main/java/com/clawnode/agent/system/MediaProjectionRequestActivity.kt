@@ -38,9 +38,32 @@ class MediaProjectionRequestActivity : Activity() {
         if (resultCode == RESULT_OK && data != null) {
             MediaProjectionHolder.saveAuthorization(this, resultCode, data)
             ClawLog.bp(TAG, "auth_ok", "mode=$mode trace=$traceId")
-            when (mode) {
-                MODE_STREAM -> StreamForegroundService.start(this, traceId, fps)
-                MODE_AUTHORIZE -> ClawLog.bp(TAG, "auth_saved", "authorization stored for background capture")
+
+            // For background screenshot support (MODE_AUTHORIZE), eagerly consume the fresh
+            // authorization here to obtain a live MediaProjection instance. This avoids later
+            // services attempting to call getMediaProjection with a stale resultData.
+            // The first real capture (or stream) will start the required FG service with the
+            // proper mediaProjection type.
+            if (mode == MODE_AUTHORIZE) {
+                try {
+                    val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+                    val mp = mpm.getMediaProjection(resultCode, data)
+                    if (mp != null) {
+                        MediaProjectionHolder.projection = mp
+                        MediaProjectionHolder.resultCode = 0
+                        MediaProjectionHolder.resultData = null
+                        ClawLog.bp(TAG, "auth_saved", "authorization stored for background capture (live projection ready)")
+                    } else {
+                        ClawLog.w(TAG, "auth_live_failed", "getMediaProjection returned null for AUTHORIZE")
+                    }
+                } catch (t: Throwable) {
+                    ClawLog.w(TAG, "auth_consume_failed", t.message ?: "consume error")
+                    // Live instance not created; first fallback use will try inside its FG service.
+                }
+            }
+
+            if (mode == MODE_STREAM) {
+                StreamForegroundService.start(this, traceId, fps)
             }
         } else {
             ClawLog.w(TAG, "auth_denied", "mode=$mode resultCode=$resultCode")

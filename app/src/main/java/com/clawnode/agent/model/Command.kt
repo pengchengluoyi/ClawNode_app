@@ -85,5 +85,6 @@ data class Command(
         const val INSTALL_APK = "INSTALL_APK"
         const val SET_CLIPBOARD = "SET_CLIPBOARD"
         const val CONTROL = "CONTROL"
+        const val GET_INSTALLED_APPS = "GET_INSTALLED_APPS"
     }
 }

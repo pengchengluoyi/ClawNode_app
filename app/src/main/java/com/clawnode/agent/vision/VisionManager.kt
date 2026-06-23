@@ -7,7 +7,6 @@ import com.clawnode.agent.core.AppForeground
 import com.clawnode.agent.core.ClawLog
 import com.clawnode.agent.model.Command
 import com.clawnode.agent.model.NodeResponse
-import com.clawnode.agent.system.MediaProjectionRequestActivity
 import com.clawnode.agent.ws.WsManager
 import android.content.Intent
 import kotlinx.coroutines.Dispatchers
@@ -69,13 +68,12 @@ class VisionManager(
         )
 
         if (!MediaProjectionHolder.hasAuthorization()) {
-            if (MediaProjectionHolder.hasPriorGrant(context)) {
-                // Previously granted — auto re-request (system dialog will appear once; user taps to re-grant for this session)
-                launchAuthorizeRequest()
-            }
+            // Do not auto-launch the system authorization dialog from automated command handling.
+            // This prevents surprise prompts during instruction execution (e.g. rapid GET_SCREENSHOT).
+            // User should (re)authorize explicitly via the app UI when background capture is needed.
             return Result.failure(
                 IllegalStateException(
-                    "background screenshot requires screen capture authorization; open ClawNode app → 授权屏幕捕获"
+                    "background screenshot requires screen capture authorization; open ClawNode app and tap 屏幕捕获授权"
                 )
             )
         }
@@ -88,16 +86,8 @@ class VisionManager(
         ClawLog.bp(TAG, "stream_start", "trace=${cmd.safeTraceId} fps=$fps")
 
         if (!MediaProjectionHolder.hasAuthorization()) {
-            if (MediaProjectionHolder.hasPriorGrant(context)) {
-                launchAuthorizeRequest(cmd.safeTraceId, fps, MediaProjectionRequestActivity.MODE_STREAM)
-                return
-            }
-            val intent = Intent(context, MediaProjectionRequestActivity::class.java)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                .putExtra(MediaProjectionRequestActivity.EXTRA_TRACE_ID, cmd.safeTraceId)
-                .putExtra(MediaProjectionRequestActivity.EXTRA_FPS, fps)
-                .putExtra(MediaProjectionRequestActivity.EXTRA_MODE, MediaProjectionRequestActivity.MODE_STREAM)
-            context.startActivity(intent)
+            // Do not auto-show system dialog from command path. Fail so caller can surface a clear message.
+            ws.sendChecked(NodeResponse.streamStatus(cmd.safeTraceId, false, "stream requires screen capture authorization; authorize in ClawNode app"))
             return
         }
 
@@ -116,12 +106,4 @@ class VisionManager(
         const val DEFAULT_FPS = 15
     }
 
-    private fun launchAuthorizeRequest(traceId: String = "", fps: Int = DEFAULT_FPS, mode: String = MediaProjectionRequestActivity.MODE_AUTHORIZE) {
-        val intent = Intent(context, MediaProjectionRequestActivity::class.java)
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            .putExtra(MediaProjectionRequestActivity.EXTRA_TRACE_ID, traceId)
-            .putExtra(MediaProjectionRequestActivity.EXTRA_FPS, fps)
-            .putExtra(MediaProjectionRequestActivity.EXTRA_MODE, mode)
-        context.startActivity(intent)
-    }
 }

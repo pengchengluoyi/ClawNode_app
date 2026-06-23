@@ -44,6 +44,8 @@ class ScreenshotForegroundService : Service() {
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
             ClawLog.w(TAG, "projection_stopped", "trace=$traceId system stopped projection")
+            // The shared projection is no longer valid; clear it so future uses will require re-auth.
+            MediaProjectionHolder.clearProjection()
             failAndStop("media projection stopped by system")
         }
     }
@@ -80,51 +82,72 @@ class ScreenshotForegroundService : Service() {
     }
 
     private fun startCapture() {
-        val data = MediaProjectionHolder.resultData
-        val code = MediaProjectionHolder.resultCode
-        if (data == null) {
-            failAndStop("no media projection authorization")
-            return
-        }
+        try {
+            // Ensure this service instance starts clean (defensive against rapid successive requests).
+            releaseCapture()
 
-        val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        val mp = mpm.getMediaProjection(code, data)
-        if (mp == null) {
-            failAndStop("getMediaProjection returned null")
-            return
-        }
+            val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
 
-        projection = mp
-        mp.registerCallback(projectionCallback, mainHandler)
-
-        val metrics = resources.displayMetrics
-        val (w, h) = scaledSize(metrics)
-        width = w
-        height = h
-
-        ClawLog.bp(TAG, "capture_start", "trace=$traceId size=${w}x$h")
-
-        val reader = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, 2)
-        imageReader = reader
-
-        virtualDisplay = mp.createVirtualDisplay(
-            "ClawNodeScreenshot",
-            w, h, metrics.densityDpi,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            reader.surface,
-            null,
-            mainHandler
-        )
-
-        reader.setOnImageAvailableListener({ r -> onFrame(r) }, mainHandler)
-
-        // 兜底：VirtualDisplay 迟迟无帧
-        mainHandler.postDelayed({
-            if (!frameDelivered.get()) {
-                ClawLog.w(TAG, "capture_frame_timeout", "trace=$traceId")
-                failAndStop("screenshot frame timeout")
+            // Prefer a previously obtained live MediaProjection instance.
+            // Only fall back to consuming the one-time resultData to create it (and store for reuse).
+            var mp = MediaProjectionHolder.projection
+            if (mp == null) {
+                val data = MediaProjectionHolder.resultData
+                val code = MediaProjectionHolder.resultCode
+                if (data == null) {
+                    failAndStop("no media projection authorization")
+                    return
+                }
+                mp = mpm.getMediaProjection(code, data)
+                if (mp == null) {
+                    failAndStop("getMediaProjection returned null")
+                    return
+                }
+                // Consume the one-time auth token into a reusable live projection instance.
+                // Clear the resultData so no future path tries to getMediaProjection with it again.
+                MediaProjectionHolder.projection = mp
+                MediaProjectionHolder.resultCode = 0
+                MediaProjectionHolder.resultData = null
+                ClawLog.bp(TAG, "projection_created_from_result", "trace=$traceId")
             }
-        }, FRAME_TIMEOUT_MS)
+
+            projection = mp
+            mp.registerCallback(projectionCallback, mainHandler)
+
+            val metrics = resources.displayMetrics
+            val (w, h) = scaledSize(metrics)
+            width = w
+            height = h
+
+            ClawLog.bp(TAG, "capture_start", "trace=$traceId size=${w}x$h usingLiveProj=${MediaProjectionHolder.projection === mp}")
+
+            val reader = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, 2)
+            imageReader = reader
+
+            virtualDisplay = mp.createVirtualDisplay(
+                "ClawNodeScreenshot",
+                w, h, metrics.densityDpi,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                reader.surface,
+                null,
+                mainHandler
+            )
+
+            reader.setOnImageAvailableListener({ r -> onFrame(r) }, mainHandler)
+
+            // 兜底：VirtualDisplay 迟迟无帧
+            mainHandler.postDelayed({
+                if (!frameDelivered.get()) {
+                    ClawLog.w(TAG, "capture_frame_timeout", "trace=$traceId")
+                    failAndStop("screenshot frame timeout")
+                }
+            }, FRAME_TIMEOUT_MS)
+        } catch (t: Throwable) {
+            // Never let a MediaProjection setup error (e.g. SecurityException on token reuse)
+            // become an uncaught exception that crashes the process.
+            ClawLog.e(TAG, "capture_start_error", "trace=$traceId", t)
+            failAndStop("screenshot capture start failed: ${t.message}")
+        }
     }
 
     private fun onFrame(reader: ImageReader) {
@@ -176,15 +199,18 @@ class ScreenshotForegroundService : Service() {
     }
 
     private fun releaseCapture() {
+        // For single-shot screenshots we only own the temporary VirtualDisplay + ImageReader.
+        // We must NOT stop() the MediaProjection itself — it is shared for future captures.
         runCatching { virtualDisplay?.release() }
         virtualDisplay = null
         runCatching { imageReader?.setOnImageAvailableListener(null, null) }
         runCatching { imageReader?.close() }
         imageReader = null
+        // Unregister our callback but leave the projection alive in the holder.
         runCatching {
             projection?.unregisterCallback(projectionCallback)
-            projection?.stop()
         }
+        // Do not null or stop the shared projection here.
         projection = null
     }
 

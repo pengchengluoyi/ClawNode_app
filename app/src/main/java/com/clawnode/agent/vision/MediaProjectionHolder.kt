@@ -5,11 +5,14 @@ import android.content.Intent
 import android.media.projection.MediaProjection
 
 /**
- * MediaProjection 授权结果的中转。
+ * Holds the current MediaProjection authorization state in-process.
  *
- * MediaProjectionRequestActivity 拿到 (resultCode, data) 后存入此处，
- * StreamForegroundService 在前台化之后再用它创建 MediaProjection。
- * 用进程内单例传递，避免把不可序列化的 MediaProjection 塞进 Intent。
+ * - resultData/resultCode: one-time token returned by the system grant (consumed once).
+ * - projection: the live MediaProjection instance obtained via getMediaProjection (reusable
+ *   for multiple VirtualDisplays / captures until the system stops it).
+ *
+ * We no longer persist resultData across process death; a fresh user grant is required
+ * after restarts if background capture is needed.
  */
 object MediaProjectionHolder {
     @Volatile
@@ -22,15 +25,17 @@ object MediaProjectionHolder {
     @Volatile
     var projection: MediaProjection? = null
 
-    fun hasAuthorization(): Boolean = resultData != null
+    fun hasAuthorization(): Boolean = projection != null || resultData != null
 
     fun hasPriorGrant(context: Context): Boolean = MediaProjectionAuthStore.hasEverGranted(context)
 
     fun restoreFromDisk(context: Context) {
+        // Result data is no longer loaded from disk (one-time tokens cannot be reused that way).
+        // This call is kept for compatibility / future extension. ever_granted is read directly
+        // by hasPriorGrant when deciding UX hints.
         if (resultData != null) return
-        val loaded = MediaProjectionAuthStore.load(context) ?: return
-        resultCode = loaded.first
-        resultData = loaded.second
+        // load(...) now always returns null by design.
+        MediaProjectionAuthStore.load(context)
     }
 
     fun saveAuthorization(context: Context, code: Int, data: Intent) {
@@ -43,6 +48,17 @@ object MediaProjectionHolder {
     fun clearAuthorization(context: Context? = null) {
         resultCode = 0
         resultData = null
+        projection = null
         context?.let { MediaProjectionAuthStore.clear(it) }
+    }
+
+    /** Called when the system (or user) stops the active MediaProjection; future captures will need re-auth. */
+    fun clearProjection() {
+        projection = null
+        // We keep resultData/resultCode as-is; they are one-time tokens anyway.
+        // hasAuthorization() will be false because we check resultData, but for projection users we prefer the live instance.
+        // For safety also clear in-memory result so next use goes through proper re-auth flow.
+        resultCode = 0
+        resultData = null
     }
 }

@@ -329,9 +329,14 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        binding.tvCaptureState.text =
-            if (MediaProjectionHolder.hasAuthorization()) "🟢 屏幕捕获：已授权（支持后台截图）"
-            else "🟡 屏幕捕获：未授权（后台截图需先授权）"
+        binding.tvCaptureState.text = when {
+            MediaProjectionHolder.hasAuthorization() ->
+                "🟢 屏幕捕获：已授权（支持后台截图）"
+            MediaProjectionHolder.hasPriorGrant(this) ->
+                "🟡 屏幕捕获：曾授权（重启后请点击下方按钮重新授权以恢复后台截图）"
+            else ->
+                "🟡 屏幕捕获：未授权（后台截图需先授权）"
+        }
 
         binding.tvBatteryState.text =
             if (SystemController.isBatteryOptimizationIgnored(this)) "🟢 电池优化：已忽略（推荐）"

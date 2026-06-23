@@ -26,8 +26,25 @@ class AppController(
         }
 
         return try {
-            val intent = buildLaunchIntent(packageName, activityClass)
-                ?: return Result(false, "no launch intent for $packageName (not installed or no launcher)")
+            var intent = buildLaunchIntent(packageName, activityClass)
+
+            if (intent == null) {
+                // Fallback: try to find by label (user-friendly name) if exact package not found.
+                // This helps when planner sends a display name instead of package.
+                val lower = packageName.lowercase()
+                val match = listLaunchableApps().firstOrNull {
+                    it.packageName.equals(packageName, true) ||
+                    it.label.lowercase().contains(lower)
+                }
+                if (match != null) {
+                    intent = buildLaunchIntent(match.packageName, null)
+                    ClawLog.bp(TAG, "open_app_fallback_by_label", "input=$packageName matched=${match.packageName}")
+                }
+            }
+
+            if (intent == null) {
+                return Result(false, "no launch intent for $packageName (not installed or no launcher)")
+            }
 
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             context.startActivity(intent)
@@ -100,6 +117,27 @@ class AppController(
         val am = context.getSystemService(ActivityManager::class.java) ?: return false
         @Suppress("DEPRECATION")
         return am.runningAppProcesses?.any { it.processName == packageName } == true
+    }
+
+    data class InstalledApp(val packageName: String, val label: String)
+
+    /** 返回设备上所有有 Launcher Intent 的应用（可被 open_app 直接启动的）。 */
+    fun listLaunchableApps(): List<InstalledApp> {
+        val pm = context.packageManager
+        val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+        return try {
+            pm.queryIntentActivities(intent, 0)
+                .mapNotNull { ri ->
+                    val pkg = ri.activityInfo?.packageName ?: return@mapNotNull null
+                    val label = ri.loadLabel(pm)?.toString()?.trim().orEmpty().ifBlank { pkg }
+                    InstalledApp(pkg, label)
+                }
+                .distinctBy { it.packageName }
+                .sortedBy { it.label.lowercase() }
+        } catch (e: Exception) {
+            ClawLog.w(TAG, "list_apps_fail", e.message ?: "")
+            emptyList()
+        }
     }
 
     companion object {

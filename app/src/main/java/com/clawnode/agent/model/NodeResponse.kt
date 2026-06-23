@@ -42,6 +42,12 @@ data class NodeResponse(
         @SerializedName("file_name") val fileName: String? = null
     )
 
+    /** 已安装可启动应用列表 */
+    data class InstalledApp(
+        @SerializedName("package") val packageName: String,
+        @SerializedName("label") val label: String
+    )
+
     companion object {
         const val TYPE_ACTION_RESULT = "ACTION_RESULT"
         const val TYPE_SCREENSHOT_RESULT = "SCREENSHOT_RESULT"
@@ -126,6 +132,14 @@ data class NodeResponse(
                 version = version,
                 fileName = fileName
             )
+        )
+
+        const val TYPE_INSTALLED_APPS = "INSTALLED_APPS"
+
+        fun installedApps(traceId: String, apps: List<InstalledApp>) = NodeResponse(
+            traceId = traceId,
+            type = TYPE_INSTALLED_APPS,
+            data = mapOf("apps" to apps)
         )
     }
 }
