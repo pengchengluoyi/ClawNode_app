@@ -83,6 +83,8 @@ Android 14 强制要求 `MediaProjection` 运行在 `foregroundServiceType="medi
 { "trace_id": "req-4", "action_type": "GET_SCREENSHOT", "payload": { "quality": 80 } }
 { "trace_id": "req-5", "action_type": "START_STREAM",   "payload": { "fps": 15 } }
 { "trace_id": "req-6", "action_type": "STOP_STREAM",    "payload": {} }
+{ "trace_id": "req-7", "action_type": "INSTALL_APK",   "payload": { "url": "https://example.com/app.apk", "file_name": "app.apk" } }
+{ "trace_id": "req-8", "action_type": "SET_CLIPBOARD", "payload": { "text": "hello from server" } }
 ```
 
 > ⚠️ **协议补充**：原始 SWIPE payload 仅给出 `x/y`，但滑动逻辑上必须有终点，已追加可选字段 `x2/y2` 作为滑动终点。

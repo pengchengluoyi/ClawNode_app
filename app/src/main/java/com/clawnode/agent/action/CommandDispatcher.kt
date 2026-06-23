@@ -25,18 +25,21 @@ class CommandDispatcher(
     private val onClearAppCache: (String) -> Pair<Boolean, String>,
     private val onExportLogs: suspend (Int) -> Pair<Boolean, String>,
     private val onRunShell: (String) -> Triple<Boolean, String, String>,
+    private val onInstallApk: suspend (String, String?) -> Pair<Boolean, String>,
+    private val onSetClipboard: (String) -> Pair<Boolean, String>,
 ) {
 
     fun dispatch(cmd: Command) {
         ClawLog.bp(TAG, "dispatch", "trace=${cmd.traceId} action=${cmd.actionType}")
         scope.launch {
-            runCatching { handle(cmd) }
-                .onFailure { e ->
-                    ClawLog.e(TAG, "dispatch_error", "trace=${cmd.traceId} action=${cmd.actionType}", e)
-                    ws.sendChecked(
-                        NodeResponse.actionResult(cmd.traceId, false, e.message ?: "dispatch error")
-                    )
-                }
+            try {
+                handle(cmd)
+            } catch (e: Throwable) {
+                ClawLog.e(TAG, "dispatch_error", "trace=${cmd.traceId} action=${cmd.actionType}", e)
+                ws.sendChecked(
+                    NodeResponse.actionResult(cmd.traceId, false, e.message ?: "dispatch error")
+                )
+            }
         }
     }
 
@@ -56,6 +59,8 @@ class CommandDispatcher(
             Command.CLEAR_APP_CACHE -> handleClearCache(cmd)
             Command.EXPORT_LOGS -> handleExportLogs(cmd)
             Command.RUN_SHELL -> handleRunShell(cmd)
+            Command.INSTALL_APK -> handleInstallApk(cmd)
+            Command.SET_CLIPBOARD -> handleSetClipboard(cmd)
             else -> ws.sendChecked(
                 NodeResponse.actionResult(cmd.traceId, false, "unknown action_type=${cmd.actionType}")
             )
@@ -109,7 +114,11 @@ class CommandDispatcher(
     private suspend fun handleExportLogs(cmd: Command) {
         val minutes = cmd.payload?.minutes?.coerceIn(1, 24 * 60)
             ?: LogUploadManager.DEFAULT_WINDOW_MINUTES
-        val (ok, msg) = runCatching { onExportLogs(minutes) }.getOrElse { false to (it.message ?: "export error") }
+        val (ok, msg) = try {
+            onExportLogs(minutes)
+        } catch (e: Throwable) {
+            false to (e.message ?: "export error")
+        }
         ws.sendChecked(NodeResponse.actionResult(cmd.traceId, ok, msg))
     }
 
@@ -123,6 +132,33 @@ class CommandDispatcher(
             Triple(false, "", it.message ?: "shell error")
         }
         ws.sendChecked(NodeResponse.shellResult(cmd.traceId, ok, stdout, stderr))
+    }
+
+    private suspend fun handleInstallApk(cmd: Command) {
+        val url = cmd.payload?.url
+        if (url.isNullOrBlank()) {
+            ws.sendChecked(NodeResponse.actionResult(cmd.traceId, false, "INSTALL_APK requires url"))
+            return
+        }
+        val fileName = cmd.payload?.fileName?.takeIf { it.isNotBlank() }
+        val (ok, msg) = try {
+            onInstallApk(url, fileName)
+        } catch (e: Throwable) {
+            false to (e.message ?: "install error")
+        }
+        ws.sendChecked(NodeResponse.actionResult(cmd.traceId, ok, msg))
+    }
+
+    private fun handleSetClipboard(cmd: Command) {
+        val text = cmd.payload?.text
+        if (text.isNullOrBlank()) {
+            ws.sendChecked(NodeResponse.actionResult(cmd.traceId, false, "SET_CLIPBOARD requires text"))
+            return
+        }
+        val (ok, msg) = runCatching { onSetClipboard(text) }.getOrElse {
+            false to (it.message ?: "set clipboard error")
+        }
+        ws.sendChecked(NodeResponse.actionResult(cmd.traceId, ok, msg))
     }
 
     private fun handleKeyEvent(cmd: Command) {

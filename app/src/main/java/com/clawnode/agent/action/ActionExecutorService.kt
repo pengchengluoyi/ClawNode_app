@@ -19,7 +19,9 @@ import com.clawnode.agent.service.NodeForegroundService
 import com.clawnode.agent.pairing.PairingBridge
 import com.clawnode.agent.pairing.PairingHttpServer
 import com.clawnode.agent.system.AppController
+import com.clawnode.agent.system.ClipboardController
 import com.clawnode.agent.system.ShellController
+import com.clawnode.agent.update.AppUpdateManager
 import com.clawnode.agent.system.WakeUpActivity
 import com.clawnode.agent.vision.MediaProjectionHolder
 import com.clawnode.agent.vision.StreamBridge
@@ -52,6 +54,7 @@ class ActionExecutorService : AccessibilityService() {
     private lateinit var dispatcher: CommandDispatcher
     private lateinit var appController: AppController
     private lateinit var shellController: ShellController
+    private lateinit var clipboardController: ClipboardController
     private var screenWakeReceiver: BroadcastReceiver? = null
     private var networkMonitor: NetworkMonitor? = null
     @Volatile
@@ -68,6 +71,7 @@ class ActionExecutorService : AccessibilityService() {
         gestureController = GestureController(this)
         appController = AppController(applicationContext, this)
         shellController = ShellController(applicationContext)
+        clipboardController = ClipboardController(applicationContext)
         val configManager = ConfigManager.get(applicationContext)
         wsManager = WsManager(
             scope,
@@ -130,6 +134,23 @@ class ActionExecutorService : AccessibilityService() {
             },
             onRunShell = { command ->
                 shellController.run(command).let { Triple(it.success, it.stdout, it.stderr) }
+            },
+            onInstallApk = { url, fileName ->
+                try {
+                    if (!AppUpdateManager.canInstallPackages(applicationContext)) {
+                        false to "no REQUEST_INSTALL_PACKAGES permission"
+                    } else {
+                        val name = fileName?.takeIf { it.isNotBlank() } ?: "remote_install.apk"
+                        val file = AppUpdateManager.downloadApk(applicationContext, url, name)
+                        AppUpdateManager.installApk(applicationContext, file)
+                        true to "install initiated: ${file.name}"
+                    }
+                } catch (e: Exception) {
+                    false to (e.message ?: "install failed")
+                }
+            },
+            onSetClipboard = { text ->
+                clipboardController.setText(text).let { it.success to it.message }
             },
         )
 

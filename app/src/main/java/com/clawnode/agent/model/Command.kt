@@ -35,7 +35,13 @@ data class Command(
         /** EXPORT_LOGS：最近 N 分钟，默认 5 */
         @SerializedName("minutes") val minutes: Int? = null,
         /** RUN_SHELL：受限 shell 命令 */
-        @SerializedName("command") val command: String? = null
+        @SerializedName("command") val command: String? = null,
+        /** INSTALL_APK：APK 下载地址 */
+        @SerializedName("url") val url: String? = null,
+        /** INSTALL_APK：可选文件名 */
+        @SerializedName("file_name") val fileName: String? = null,
+        /** SET_CLIPBOARD：要设置的文本 */
+        @SerializedName("text") val text: String? = null
     )
 
     companion object ActionType {
@@ -57,5 +63,7 @@ data class Command(
         const val CLEAR_APP_CACHE = "CLEAR_APP_CACHE"
         const val EXPORT_LOGS = "EXPORT_LOGS"
         const val RUN_SHELL = "RUN_SHELL"
+        const val INSTALL_APK = "INSTALL_APK"
+        const val SET_CLIPBOARD = "SET_CLIPBOARD"
     }
 }
