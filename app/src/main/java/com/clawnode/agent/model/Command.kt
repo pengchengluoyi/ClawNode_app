@@ -3,24 +3,41 @@ package com.clawnode.agent.model
 import com.google.gson.annotations.SerializedName
 
 /**
- * 网关下发指令的统一信封。
+ * ClawNode 与服务端统一使用的下发指令格式（与服务端 send_command 及直连下发完全一致）。
  *
- * 由于不同 action_type 的 payload 字段不同，这里用一个宽松的 [Payload]
- * 承载所有可能字段（均为可空），由分发器按 action_type 取用对应字段。
+ * 服务端下发示例：
+ *   { "type": "command", "command": "INSTALL_APK", "params": { "url": "...", "file_name": "..." } }
+ *   { "command": "TAP", "params": { "x": 100, "y": 200, "duration_ms": 100 } }
+ *   { "type": "command", "command": "control", "params": { "action": "tap", "x": 100, "y": 200 } }
+ *
+ * trace_id / req_id 缺失时会自动兜底生成 safeTraceId。
+ * 接收端对旧的 action_type/payload 格式有最小兼容转换（仅在边界做 key 重命名）。
  */
 data class Command(
-    @SerializedName("trace_id") val traceId: String,
-    @SerializedName("action_type") val actionType: String,
-    @SerializedName("payload") val payload: Payload? = null
+    @SerializedName("trace_id") val traceId: String? = null,
+    @SerializedName("req_id") val reqId: String? = null,
+    @SerializedName("type") val type: String? = null,
+    /** 服务端使用的动作字段： "INSTALL_APK", "TAP", "control", "EXPORT_LOGS" 等 */
+    @SerializedName("command") val command: String? = null,
+    /** 服务端使用的参数对象（对应历史 payload） */
+    @SerializedName("params") val params: Params? = null,
+    @SerializedName("timestamp") val timestamp: String? = null
 ) {
-    data class Payload(
+    /** 永远非空的 traceId */
+    val safeTraceId: String
+        get() = traceId ?: reqId ?: "auto-${System.currentTimeMillis()}"
+
+    /** action 别名，便于统一引用 */
+    val action: String get() = command ?: ""
+
+    data class Params(
         // TAP / SWIPE 起点
         @SerializedName("x") val x: Int? = null,
         @SerializedName("y") val y: Int? = null,
-        // SWIPE 终点（协议补充字段：原始协议仅给出 x/y，滑动必须有终点）
+        // SWIPE 终点
         @SerializedName("x2") val x2: Int? = null,
         @SerializedName("y2") val y2: Int? = null,
-        // 手势耗时（TAP 的按压时长 / SWIPE 的滑动时长）
+        // 手势耗时
         @SerializedName("duration_ms") val durationMs: Long? = null,
         // GET_SCREENSHOT 的 JPEG 质量 0-100
         @SerializedName("quality") val quality: Int? = null,
@@ -34,14 +51,16 @@ data class Command(
         @SerializedName("activity") val activity: String? = null,
         /** EXPORT_LOGS：最近 N 分钟，默认 5 */
         @SerializedName("minutes") val minutes: Int? = null,
-        /** RUN_SHELL：受限 shell 命令 */
+        /** RUN_SHELL：受限 shell 命令（注意与外层 command 区分） */
         @SerializedName("command") val command: String? = null,
         /** INSTALL_APK：APK 下载地址 */
         @SerializedName("url") val url: String? = null,
         /** INSTALL_APK：可选文件名 */
         @SerializedName("file_name") val fileName: String? = null,
         /** SET_CLIPBOARD：要设置的文本 */
-        @SerializedName("text") val text: String? = null
+        @SerializedName("text") val text: String? = null,
+        /** 当 command == "control" 时，子动作如 "tap"、"swipe" */
+        @SerializedName("action") val action: String? = null
     )
 
     companion object ActionType {
@@ -65,5 +84,6 @@ data class Command(
         const val RUN_SHELL = "RUN_SHELL"
         const val INSTALL_APK = "INSTALL_APK"
         const val SET_CLIPBOARD = "SET_CLIPBOARD"
+        const val CONTROL = "CONTROL"
     }
 }

@@ -512,23 +512,87 @@ class WsManager(
             return
         }
 
-        val cmd = runCatching { gson.fromJson(text, Command::class.java) }.getOrNull()
-        if (cmd == null || cmd.actionType.isNullOrBlank()) {
+        // ClawNode 现在使用与服务端完全一致的命令格式：
+        //   { "type": "command", "command": "XXX", "params": { ... } }
+        //   或 { "command": "XXX", "params": { ... } }
+        // 边界做极小 key 兼容（把旧的 action_type/payload 映射到 command/params），
+        // 之后所有业务逻辑只认 command + params（与 server 同一套）。
+        val normalizedText = normalizeToServerCommandFormat(text) ?: text
+        val cmd = runCatching { gson.fromJson(normalizedText, Command::class.java) }.getOrNull()
+        if (cmd == null || cmd.command.isNullOrBlank()) {
             ClawLog.w(TAG, "rx_drop", "malformed: $preview")
             return
         }
         if (webSocket == null) {
-            ClawLog.w(TAG, "rx_cmd_no_ws", "trace=${cmd.traceId} action=${cmd.actionType}")
+            ClawLog.w(TAG, "rx_cmd_no_ws", "trace=${cmd.safeTraceId} command=${cmd.command}")
             return
         }
         val emitted = _incomingCommands.tryEmit(cmd)
-        ClawLog.bp(TAG, "cmd_emit", "trace=${cmd.traceId} action=${cmd.actionType} ok=$emitted")
+        ClawLog.bp(TAG, "cmd_emit", "trace=${cmd.safeTraceId} command=${cmd.command} ok=$emitted")
         if (!emitted) {
-            ClawLog.w(TAG, "cmd_buffer_full", "trace=${cmd.traceId}")
+            ClawLog.w(TAG, "cmd_buffer_full", "trace=${cmd.safeTraceId}")
         }
     }
 
     private data class ServerAck(val action: String? = null, val code: Int? = null)
+
+    /**
+     * 极小边界归一化：确保最终 JSON 拥有 "command" + "params" 字段（服务端主格式），
+     * 这样 Gson 能直接反序列化到 Command（其字段用 @SerializedName("command") / "params"）。
+     *
+     * - 如果只有 action_type / payload（历史 Claw 方言），重命名为 command / params。
+     * - 提取 trace_id / req_id。
+     * - 解包 type:"command" 或 data 层。
+     *
+     * 目的：ClawNode 与 server 使用同一套收发结构，消除双格式维护。
+     */
+    private fun normalizeToServerCommandFormat(raw: String): String? {
+        return try {
+            val root = gson.fromJson(raw, com.google.gson.JsonObject::class.java) ?: return null
+
+            // 解包
+            val obj = when {
+                root.has("type") && root.get("type").asString == "command" && root.has("command") -> root
+                root.has("data") && root.get("data").isJsonObject -> root.getAsJsonObject("data")
+                else -> root
+            }
+
+            // 决定最终的 command 值（优先 command，其次 action_type）
+            val cmdValue = when {
+                obj.has("command") && !obj.get("command").isJsonNull -> obj.get("command").asString
+                obj.has("action_type") && !obj.get("action_type").isJsonNull -> obj.get("action_type").asString
+                else -> null
+            } ?: return null
+
+            // 决定 params 对象（优先 params，其次 payload）
+            val paramsObj = when {
+                obj.has("params") && obj.get("params").isJsonObject -> obj.getAsJsonObject("params")
+                obj.has("payload") && obj.get("payload").isJsonObject -> obj.getAsJsonObject("payload")
+                else -> com.google.gson.JsonObject()
+            }
+
+            // trace 兜底
+            val trace = when {
+                obj.has("trace_id") && !obj.get("trace_id").isJsonNull -> obj.get("trace_id").asString
+                obj.has("req_id") && !obj.get("req_id").isJsonNull -> obj.get("req_id").asString
+                else -> "srv-${System.currentTimeMillis()}"
+            }
+
+            val normalized = com.google.gson.JsonObject().apply {
+                addProperty("trace_id", trace)
+                addProperty("command", cmdValue)
+                add("params", paramsObj)
+                // 保留 type 如果有
+                if (obj.has("type") && !obj.get("type").isJsonNull) {
+                    addProperty("type", obj.get("type").asString)
+                }
+            }
+
+            gson.toJson(normalized)
+        } catch (_: Exception) {
+            null
+        }
+    }
 
     private fun startHeartbeat(sn: String, epoch: Long) {
         stopHeartbeat()

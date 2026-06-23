@@ -26,8 +26,8 @@ class VisionManager(
 ) {
 
     suspend fun captureSingleShot(cmd: Command) {
-        val quality = (cmd.payload?.quality ?: DEFAULT_QUALITY).coerceIn(1, 100)
-        val traceId = cmd.traceId
+        val quality = (cmd.params?.quality ?: DEFAULT_QUALITY).coerceIn(1, 100)
+        val traceId = cmd.safeTraceId
         val inBg = !AppForeground.isInForeground(context)
 
         ClawLog.bp(TAG, "screenshot_start", "trace=$traceId bg=$inBg quality=$quality")
@@ -80,20 +80,20 @@ class VisionManager(
     }
 
     fun startStream(cmd: Command) {
-        val fps = (cmd.payload?.fps ?: DEFAULT_FPS).coerceIn(1, 30)
-        ClawLog.bp(TAG, "stream_start", "trace=${cmd.traceId} fps=$fps")
+        val fps = (cmd.params?.fps ?: DEFAULT_FPS).coerceIn(1, 30)
+        ClawLog.bp(TAG, "stream_start", "trace=${cmd.safeTraceId} fps=$fps")
 
         if (!MediaProjectionHolder.hasAuthorization()) {
             val intent = Intent(context, MediaProjectionRequestActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                .putExtra(MediaProjectionRequestActivity.EXTRA_TRACE_ID, cmd.traceId)
-                .putExtra(MediaProjectionRequestActivity.EXTRA_FPS, fps)
-                .putExtra(MediaProjectionRequestActivity.EXTRA_MODE, MediaProjectionRequestActivity.MODE_STREAM)
-            context.startActivity(intent)
-            return
-        }
+.putExtra(MediaProjectionRequestActivity.EXTRA_TRACE_ID, cmd.safeTraceId)
+            .putExtra(MediaProjectionRequestActivity.EXTRA_FPS, fps)
+            .putExtra(MediaProjectionRequestActivity.EXTRA_MODE, MediaProjectionRequestActivity.MODE_STREAM)
+        context.startActivity(intent)
+        return
+    }
 
-        StreamForegroundService.start(context, cmd.traceId, fps)
+    StreamForegroundService.start(context, cmd.safeTraceId, fps)
     }
 
     fun stopStream(cmd: Command?) {

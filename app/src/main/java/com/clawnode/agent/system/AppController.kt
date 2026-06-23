@@ -19,7 +19,7 @@ class AppController(
 
     data class Result(val success: Boolean, val message: String)
 
-    /** 启动目标应用。payload.package 必填，payload.activity 可选（完整类名）。 */
+    /** 启动目标应用。params.package 必填，params.activity 可选（完整类名）。 */
     fun launchApp(packageName: String, activityClass: String? = null): Result {
         if (packageName.isBlank()) {
             return Result(false, "OPEN_APP requires package")

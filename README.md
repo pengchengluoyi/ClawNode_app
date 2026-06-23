@@ -76,18 +76,24 @@ Android 14 强制要求 `MediaProjection` 运行在 `foregroundServiceType="medi
 ## 协议
 
 ### 下发（Gateway → Node）
+ClawNode 与服务端使用**同一套格式**（server 的 send_command 直发格式）：
+
 ```json
-{ "trace_id": "req-1", "action_type": "TAP",  "payload": { "x": 450, "y": 800, "duration_ms": 100 } }
-{ "trace_id": "req-2", "action_type": "SWIPE","payload": { "x": 100, "y": 900, "x2": 100, "y2": 300, "duration_ms": 300 } }
-{ "trace_id": "req-3", "action_type": "WAKE_UP", "payload": {} }
-{ "trace_id": "req-4", "action_type": "GET_SCREENSHOT", "payload": { "quality": 80 } }
-{ "trace_id": "req-5", "action_type": "START_STREAM",   "payload": { "fps": 15 } }
-{ "trace_id": "req-6", "action_type": "STOP_STREAM",    "payload": {} }
-{ "trace_id": "req-7", "action_type": "INSTALL_APK",   "payload": { "url": "https://example.com/app.apk", "file_name": "app.apk" } }
-{ "trace_id": "req-8", "action_type": "SET_CLIPBOARD", "payload": { "text": "hello from server" } }
+{ "type": "command", "command": "TAP",  "params": { "x": 450, "y": 800, "duration_ms": 100 } }
+{ "type": "command", "command": "SWIPE", "params": { "x": 100, "y": 900, "x2": 100, "y2": 300, "duration_ms": 300 } }
+{ "type": "command", "command": "INSTALL_APK", "params": { "url": "https://.../app.apk", "file_name": "app.apk" } }
+{ "type": "command", "command": "SET_CLIPBOARD", "params": { "text": "hello from server" } }
+{ "command": "EXPORT_LOGS", "params": { "minutes": 5 } }
 ```
 
-> ⚠️ **协议补充**：原始 SWIPE payload 仅给出 `x/y`，但滑动逻辑上必须有终点，已追加可选字段 `x2/y2` 作为滑动终点。
+控制类动作也支持 control 包装（与服务端其他节点一致）：
+```json
+{ "type": "command", "command": "control", "params": { "action": "tap", "x": 450, "y": 800 } }
+```
+
+接收端仅在边界做最小 key 兼容（action_type → command，payload → params），业务代码与 server 完全同一套字段。
+
+> ⚠️ **协议补充**：SWIPE 必须提供终点 x2/y2；duration_ms 可选。
 
 ### 回传（Node → Gateway）
 ```json

@@ -30,186 +30,194 @@ class CommandDispatcher(
 ) {
 
     fun dispatch(cmd: Command) {
-        ClawLog.bp(TAG, "dispatch", "trace=${cmd.traceId} action=${cmd.actionType}")
+        ClawLog.bp(TAG, "dispatch", "trace=${cmd.safeTraceId} command=${cmd.command}")
         scope.launch {
             try {
                 handle(cmd)
             } catch (e: Throwable) {
-                ClawLog.e(TAG, "dispatch_error", "trace=${cmd.traceId} action=${cmd.actionType}", e)
+                ClawLog.e(TAG, "dispatch_error", "trace=${cmd.safeTraceId} command=${cmd.command}", e)
                 ws.sendChecked(
-                    NodeResponse.actionResult(cmd.traceId, false, e.message ?: "dispatch error")
+                    NodeResponse.actionResult(cmd.safeTraceId, false, e.message ?: "dispatch error")
                 )
             }
         }
     }
 
     private suspend fun handle(cmd: Command) {
-        when (cmd.actionType) {
-            Command.TAP -> handleTap(cmd)
-            Command.SWIPE -> handleSwipe(cmd)
-            Command.WAKE_UP -> handleWakeUp(cmd)
-            Command.GET_SCREENSHOT -> vision.captureSingleShot(cmd)
-            Command.START_STREAM -> vision.startStream(cmd)
-            Command.STOP_STREAM -> vision.stopStream(cmd)
-            Command.GET_FOREGROUND_APP -> handleGetForegroundApp(cmd)
-            Command.KEY_EVENT -> handleKeyEvent(cmd)
-            Command.OPEN_APP, Command.START_APP -> handleOpenApp(cmd)
-            Command.CLOSE_APP, Command.STOP_APP -> handleCloseApp(cmd)
-            Command.KILL_APP -> handleKillApp(cmd)
-            Command.CLEAR_APP_CACHE -> handleClearCache(cmd)
-            Command.EXPORT_LOGS -> handleExportLogs(cmd)
-            Command.RUN_SHELL -> handleRunShell(cmd)
-            Command.INSTALL_APK -> handleInstallApk(cmd)
-            Command.SET_CLIPBOARD -> handleSetClipboard(cmd)
+        // 与 server 统一：优先用 command；如果是 "control" 包装，则用 params.action 作为子动作
+        val raw = (cmd.command ?: "").trim()
+        val sub = cmd.params?.action?.trim()?.uppercase()
+        val key = when {
+            raw.equals("control", ignoreCase = true) && !sub.isNullOrBlank() -> sub
+            else -> raw.uppercase()
+        }
+
+        when (key) {
+            Command.TAP, "TAP", "CLICK" -> handleTap(cmd)
+            Command.SWIPE, "SWIPE" -> handleSwipe(cmd)
+            Command.WAKE_UP, "WAKE_UP", "WAKE" -> handleWakeUp(cmd)
+            Command.GET_SCREENSHOT, "GET_SCREENSHOT", "SCREENSHOT" -> vision.captureSingleShot(cmd)
+            Command.START_STREAM, "START_STREAM" -> vision.startStream(cmd)
+            Command.STOP_STREAM, "STOP_STREAM" -> vision.stopStream(cmd)
+            Command.GET_FOREGROUND_APP, "GET_FOREGROUND_APP", "FOREGROUND_APP" -> handleGetForegroundApp(cmd)
+            Command.KEY_EVENT, "KEY_EVENT", "KEY", "KEYEVENT" -> handleKeyEvent(cmd)
+            Command.OPEN_APP, Command.START_APP, "OPEN_APP", "START_APP", "LAUNCH_APP" -> handleOpenApp(cmd)
+            Command.CLOSE_APP, Command.STOP_APP, "CLOSE_APP", "STOP_APP" -> handleCloseApp(cmd)
+            Command.KILL_APP, "KILL_APP" -> handleKillApp(cmd)
+            Command.CLEAR_APP_CACHE, "CLEAR_APP_CACHE", "CLEAR_CACHE" -> handleClearCache(cmd)
+            Command.EXPORT_LOGS, "EXPORT_LOGS", "EXPORTLOG", "UPLOAD_LOGS" -> handleExportLogs(cmd)
+            Command.RUN_SHELL, "RUN_SHELL", "SHELL" -> handleRunShell(cmd)
+            Command.INSTALL_APK, "INSTALL_APK", "INSTALLAPK" -> handleInstallApk(cmd)
+            Command.SET_CLIPBOARD, "SET_CLIPBOARD", "CLIPBOARD" -> handleSetClipboard(cmd)
             else -> ws.sendChecked(
-                NodeResponse.actionResult(cmd.traceId, false, "unknown action_type=${cmd.actionType}")
+                NodeResponse.actionResult(cmd.safeTraceId, false, "unknown command=${cmd.command} (effective=$key)")
             )
         }
     }
 
     private fun handleOpenApp(cmd: Command) {
-        val pkg = cmd.payload?.packageName
+        val pkg = cmd.params?.packageName
         if (pkg.isNullOrBlank()) {
-            ws.sendChecked(NodeResponse.actionResult(cmd.traceId, false, "OPEN_APP requires package"))
+            ws.sendChecked(NodeResponse.actionResult(cmd.safeTraceId, false, "OPEN_APP requires package"))
             return
         }
-        val (ok, msg) = runCatching { onLaunchApp(pkg, cmd.payload?.activity) }.getOrElse {
+        val (ok, msg) = runCatching { onLaunchApp(pkg, cmd.params?.activity) }.getOrElse {
             false to (it.message ?: "launch error")
         }
-        ws.sendChecked(NodeResponse.actionResult(cmd.traceId, ok, msg))
+        ws.sendChecked(NodeResponse.actionResult(cmd.safeTraceId, ok, msg))
     }
 
     private fun handleCloseApp(cmd: Command) {
-        val pkg = cmd.payload?.packageName
+        val pkg = cmd.params?.packageName
         if (pkg.isNullOrBlank()) {
-            ws.sendChecked(NodeResponse.actionResult(cmd.traceId, false, "CLOSE_APP requires package"))
+            ws.sendChecked(NodeResponse.actionResult(cmd.safeTraceId, false, "CLOSE_APP requires package"))
             return
         }
         val (ok, msg) = runCatching { onCloseApp(pkg) }.getOrElse {
             false to (it.message ?: "close error")
         }
-        ws.sendChecked(NodeResponse.actionResult(cmd.traceId, ok, msg))
+        ws.sendChecked(NodeResponse.actionResult(cmd.safeTraceId, ok, msg))
     }
 
     private fun handleKillApp(cmd: Command) {
-        val pkg = cmd.payload?.packageName
+        val pkg = cmd.params?.packageName
         if (pkg.isNullOrBlank()) {
-            ws.sendChecked(NodeResponse.actionResult(cmd.traceId, false, "KILL_APP requires package"))
+            ws.sendChecked(NodeResponse.actionResult(cmd.safeTraceId, false, "KILL_APP requires package"))
             return
         }
         val (ok, msg) = runCatching { onKillApp(pkg) }.getOrElse { false to (it.message ?: "kill error") }
-        ws.sendChecked(NodeResponse.actionResult(cmd.traceId, ok, msg))
+        ws.sendChecked(NodeResponse.actionResult(cmd.safeTraceId, ok, msg))
     }
 
     private fun handleClearCache(cmd: Command) {
-        val pkg = cmd.payload?.packageName
+        val pkg = cmd.params?.packageName
         if (pkg.isNullOrBlank()) {
-            ws.sendChecked(NodeResponse.actionResult(cmd.traceId, false, "CLEAR_APP_CACHE requires package"))
+            ws.sendChecked(NodeResponse.actionResult(cmd.safeTraceId, false, "CLEAR_APP_CACHE requires package"))
             return
         }
         val (ok, msg) = runCatching { onClearAppCache(pkg) }.getOrElse { false to (it.message ?: "clear error") }
-        ws.sendChecked(NodeResponse.actionResult(cmd.traceId, ok, msg))
+        ws.sendChecked(NodeResponse.actionResult(cmd.safeTraceId, ok, msg))
     }
 
     private suspend fun handleExportLogs(cmd: Command) {
-        val minutes = cmd.payload?.minutes?.coerceIn(1, 24 * 60)
+        val minutes = cmd.params?.minutes?.coerceIn(1, 24 * 60)
             ?: LogUploadManager.DEFAULT_WINDOW_MINUTES
         val (ok, msg) = try {
             onExportLogs(minutes)
         } catch (e: Throwable) {
             false to (e.message ?: "export error")
         }
-        ws.sendChecked(NodeResponse.actionResult(cmd.traceId, ok, msg))
+        ws.sendChecked(NodeResponse.actionResult(cmd.safeTraceId, ok, msg))
     }
 
     private fun handleRunShell(cmd: Command) {
-        val command = cmd.payload?.command
+        val command = cmd.params?.command
         if (command.isNullOrBlank()) {
-            ws.sendChecked(NodeResponse.actionResult(cmd.traceId, false, "RUN_SHELL requires command"))
+            ws.sendChecked(NodeResponse.actionResult(cmd.safeTraceId, false, "RUN_SHELL requires command"))
             return
         }
         val (ok, stdout, stderr) = runCatching { onRunShell(command) }.getOrElse {
             Triple(false, "", it.message ?: "shell error")
         }
-        ws.sendChecked(NodeResponse.shellResult(cmd.traceId, ok, stdout, stderr))
+        ws.sendChecked(NodeResponse.shellResult(cmd.safeTraceId, ok, stdout, stderr))
     }
 
     private suspend fun handleInstallApk(cmd: Command) {
-        val url = cmd.payload?.url
+        val url = cmd.params?.url
         if (url.isNullOrBlank()) {
-            ws.sendChecked(NodeResponse.actionResult(cmd.traceId, false, "INSTALL_APK requires url"))
+            ws.sendChecked(NodeResponse.actionResult(cmd.safeTraceId, false, "INSTALL_APK requires url"))
             return
         }
-        val fileName = cmd.payload?.fileName?.takeIf { it.isNotBlank() }
+        val fileName = cmd.params?.fileName?.takeIf { it.isNotBlank() }
         val (ok, msg) = try {
             onInstallApk(url, fileName)
         } catch (e: Throwable) {
             false to (e.message ?: "install error")
         }
-        ws.sendChecked(NodeResponse.actionResult(cmd.traceId, ok, msg))
+        ws.sendChecked(NodeResponse.actionResult(cmd.safeTraceId, ok, msg))
     }
 
     private fun handleSetClipboard(cmd: Command) {
-        val text = cmd.payload?.text
+        val text = cmd.params?.text
         if (text.isNullOrBlank()) {
-            ws.sendChecked(NodeResponse.actionResult(cmd.traceId, false, "SET_CLIPBOARD requires text"))
+            ws.sendChecked(NodeResponse.actionResult(cmd.safeTraceId, false, "SET_CLIPBOARD requires text"))
             return
         }
         val (ok, msg) = runCatching { onSetClipboard(text) }.getOrElse {
             false to (it.message ?: "set clipboard error")
         }
-        ws.sendChecked(NodeResponse.actionResult(cmd.traceId, ok, msg))
+        ws.sendChecked(NodeResponse.actionResult(cmd.safeTraceId, ok, msg))
     }
 
     private fun handleKeyEvent(cmd: Command) {
-        val key = cmd.payload?.keyevent
+        val key = cmd.params?.keyevent
         if (key.isNullOrBlank()) {
-            ws.sendChecked(NodeResponse.actionResult(cmd.traceId, false, "KEY_EVENT requires keyevent"))
+            ws.sendChecked(NodeResponse.actionResult(cmd.safeTraceId, false, "KEY_EVENT requires keyevent"))
             return
         }
         val ok = runCatching { onKeyEvent(key) }.getOrDefault(false)
-        ws.sendChecked(NodeResponse.actionResult(cmd.traceId, ok, if (ok) "key $key dispatched" else "key $key unsupported"))
+        ws.sendChecked(NodeResponse.actionResult(cmd.safeTraceId, ok, if (ok) "key $key dispatched" else "key $key unsupported"))
     }
 
     private suspend fun handleTap(cmd: Command) {
-        val p = cmd.payload
+        val p = cmd.params
         val x = p?.x; val y = p?.y
         if (x == null || y == null) {
-            ws.sendChecked(NodeResponse.actionResult(cmd.traceId, false, "TAP requires x,y"))
+            ws.sendChecked(NodeResponse.actionResult(cmd.safeTraceId, false, "TAP requires x,y"))
             return
         }
         val r = gesture.tap(
             x.toFloat(), y.toFloat(),
             p.durationMs ?: GestureController.DEFAULT_TAP_MS
         )
-        ClawLog.bp(TAG, "tap_done", "trace=${cmd.traceId} ok=${r.success}")
-        ws.sendChecked(NodeResponse.actionResult(cmd.traceId, r.success, r.message))
+        ClawLog.bp(TAG, "tap_done", "trace=${cmd.safeTraceId} ok=${r.success}")
+        ws.sendChecked(NodeResponse.actionResult(cmd.safeTraceId, r.success, r.message))
     }
 
     private suspend fun handleSwipe(cmd: Command) {
-        val p = cmd.payload
+        val p = cmd.params
         val x1 = p?.x; val y1 = p?.y; val x2 = p?.x2; val y2 = p?.y2
         if (x1 == null || y1 == null || x2 == null || y2 == null) {
-            ws.sendChecked(NodeResponse.actionResult(cmd.traceId, false, "SWIPE requires x,y,x2,y2"))
+            ws.sendChecked(NodeResponse.actionResult(cmd.safeTraceId, false, "SWIPE requires x,y,x2,y2"))
             return
         }
         val r = gesture.swipe(
             x1.toFloat(), y1.toFloat(), x2.toFloat(), y2.toFloat(),
             p.durationMs ?: GestureController.DEFAULT_SWIPE_MS
         )
-        ClawLog.bp(TAG, "swipe_done", "trace=${cmd.traceId} ok=${r.success}")
-        ws.sendChecked(NodeResponse.actionResult(cmd.traceId, r.success, r.message))
+        ClawLog.bp(TAG, "swipe_done", "trace=${cmd.safeTraceId} ok=${r.success}")
+        ws.sendChecked(NodeResponse.actionResult(cmd.safeTraceId, r.success, r.message))
     }
 
     private fun handleWakeUp(cmd: Command) {
         runCatching { onWakeUp() }
             .onSuccess {
-                ClawLog.bp(TAG, "wake_up_done", "trace=${cmd.traceId}")
-                ws.sendChecked(NodeResponse.actionResult(cmd.traceId, true, "wake-up activity launched"))
+                ClawLog.bp(TAG, "wake_up_done", "trace=${cmd.safeTraceId}")
+                ws.sendChecked(NodeResponse.actionResult(cmd.safeTraceId, true, "wake-up activity launched"))
             }
             .onFailure { e ->
-                ClawLog.e(TAG, "wake_up_fail", "trace=${cmd.traceId}", e)
-                ws.sendChecked(NodeResponse.actionResult(cmd.traceId, false, e.message ?: "wake-up failed"))
+                ClawLog.e(TAG, "wake_up_fail", "trace=${cmd.safeTraceId}", e)
+                ws.sendChecked(NodeResponse.actionResult(cmd.safeTraceId, false, e.message ?: "wake-up failed"))
             }
     }
 
@@ -217,7 +225,7 @@ class CommandDispatcher(
         val pkg = actionExecutorForegroundPackage()
         ws.sendChecked(
             NodeResponse.actionResult(
-                cmd.traceId,
+                cmd.safeTraceId,
                 pkg.isNotBlank(),
                 pkg.ifBlank { "foreground package unavailable" }
             )
