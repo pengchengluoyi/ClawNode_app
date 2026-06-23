@@ -72,7 +72,31 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          cp app/build/outputs/apk/debug/app-debug.apk "ClawNode-${VERSION}.apk"
+          echo "=== Preparing release artifact for v${VERSION} ==="
+          echo "Listing build outputs:"
+          ls -la app/build/outputs/apk/debug/ || true
+          ls -la app/build/outputs/apk/release/ || true
+
+          RELEASE_APK=""
+          # 优先精确匹配 release 产物
+          if [ -f app/build/outputs/apk/release/app-release.apk ]; then
+            RELEASE_APK="app/build/outputs/apk/release/app-release.apk"
+          else
+            # 兼容不同 Gradle/Android 插件输出命名，找任意 release apk
+            RELEASE_APK=$(find app/build/outputs/apk/release -name "*.apk" 2>/dev/null | head -n 1 || true)
+          fi
+
+          if [ -n "$RELEASE_APK" ] && [ -f "$RELEASE_APK" ]; then
+            echo "Using release APK: $RELEASE_APK"
+            cp "$RELEASE_APK" "ClawNode-${VERSION}.apk"
+          else
+            echo "ERROR: No release APK found under app/build/outputs/apk/release/"
+            echo "This is a release build — we should never fall back to debug for tagged releases."
+            echo "Build artifacts:"
+            find app/build/outputs/apk -name "*.apk" -exec ls -l {} \; || true
+            exit 1
+          fi
+
           cat > latest.json <<EOF
           {
             "version": "${VERSION}",
@@ -81,7 +105,11 @@ jobs:
             "download_url": "https://github.com/${{ github.repository }}/releases/download/${GITHUB_REF_NAME}/ClawNode-${VERSION}.apk"
           }
           EOF
+
+          echo "=== Prepared files ==="
           ls -la ClawNode-*.apk latest.json
+          echo "File type check:"
+          file "ClawNode-${VERSION}.apk" || true
 
       - name: Upload APK artifacts
         uses: actions/upload-artifact@v4
@@ -107,8 +135,18 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          echo "=== Updating latest.json on main branch for ${GITHUB_REF_NAME} ==="
           git fetch origin main
-          git checkout main
+
+          # 彻底清理 tag 检出时留下的脏文件（Prepare 步骤会生成 latest.json 和 ClawNode-*.apk）
+          # 这是历史遗留问题：之前只用 debug APK + 没有清理导致 checkout 失败
+          git reset --hard
+          git clean -fdx
+
+          # 更稳健的方式：强制将本地 main 指向远程 main，避免 checkout 时的各种脏状态问题
+          git checkout -B main origin/main
+
           cat > latest.json <<EOF
           {
             "version": "${VERSION}",
@@ -117,6 +155,12 @@ jobs:
             "download_url": "https://github.com/${{ github.repository }}/releases/download/${GITHUB_REF_NAME}/ClawNode-${VERSION}.apk"
           }
           EOF
+
           git add latest.json
-          git diff --cached --quiet || git commit -m "chore: update latest.json for ${GITHUB_REF_NAME}"
-          git push origin main
+          if git diff --cached --quiet; then
+            echo "No changes to latest.json, skipping commit"
+          else
+            git commit -m "chore: update latest.json for ${GITHUB_REF_NAME}"
+            git push origin main
+            echo "latest.json on main updated to ${VERSION}"
+          fi
