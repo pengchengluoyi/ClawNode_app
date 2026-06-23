@@ -49,6 +49,21 @@ object MediaProjectionAuthStore {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().clear().apply()
     }
 
+    private const val KEY_GRANTED = "ever_granted"
+
+    /** 记录用户曾经成功授权过（用于重启/更新后自动重新拉起授权流程，减少手动操作） */
+    fun setEverGranted(context: Context, granted: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_GRANTED, granted)
+            .apply()
+    }
+
+    fun hasEverGranted(context: Context): Boolean {
+        return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_GRANTED, false)
+    }
+
     private fun parcelIntent(intent: Intent): ByteArray {
         val parcel = Parcel.obtain()
         try {

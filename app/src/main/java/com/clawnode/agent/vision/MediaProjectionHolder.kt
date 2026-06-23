@@ -24,6 +24,8 @@ object MediaProjectionHolder {
 
     fun hasAuthorization(): Boolean = resultData != null
 
+    fun hasPriorGrant(context: Context): Boolean = MediaProjectionAuthStore.hasEverGranted(context)
+
     fun restoreFromDisk(context: Context) {
         if (resultData != null) return
         val loaded = MediaProjectionAuthStore.load(context) ?: return
@@ -35,6 +37,7 @@ object MediaProjectionHolder {
         resultCode = code
         resultData = data
         MediaProjectionAuthStore.save(context, code, data)
+        MediaProjectionAuthStore.setEverGranted(context, true)
     }
 
     fun clearAuthorization(context: Context? = null) {

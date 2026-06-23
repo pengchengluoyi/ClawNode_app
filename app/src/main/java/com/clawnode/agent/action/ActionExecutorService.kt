@@ -22,6 +22,7 @@ import com.clawnode.agent.system.AppController
 import com.clawnode.agent.system.ClipboardController
 import com.clawnode.agent.system.ShellController
 import com.clawnode.agent.update.AppUpdateManager
+import com.clawnode.agent.model.NodeResponse
 import com.clawnode.agent.system.WakeUpActivity
 import com.clawnode.agent.vision.MediaProjectionHolder
 import com.clawnode.agent.vision.StreamBridge
@@ -71,6 +72,17 @@ class ActionExecutorService : AccessibilityService() {
         ClawLog.bp(TAG, "service_connected", "accessibility service ready")
         MediaProjectionHolder.restoreFromDisk(applicationContext)
 
+        // After restart/update, if user previously granted screen capture, auto re-request to refresh token.
+        // This makes "authorize once" experience: system dialog may appear once; no need to click in-app buttons again.
+        if (!MediaProjectionHolder.hasAuthorization() && MediaProjectionHolder.hasPriorGrant(applicationContext)) {
+            try {
+                val i = Intent(applicationContext, MediaProjectionRequestActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    .putExtra(MediaProjectionRequestActivity.EXTRA_MODE, MediaProjectionRequestActivity.MODE_AUTHORIZE)
+                applicationContext.startActivity(i)
+            } catch (_: Exception) {}
+        }
+
         NodeForegroundService.start(applicationContext)
 
         gestureController = GestureController(this)
@@ -107,6 +119,19 @@ class ActionExecutorService : AccessibilityService() {
         PairingBridge.onPairPush = { payload ->
             wsManager.applyPairConfigPush(payload.wsUrl, payload.authToken, payload.gatewayId)
         }
+
+        // Wire self-update progress (for progress bar on server side for ClawNode self-update path)
+        AppUpdateManager.setSelfProgressReporter { stage, percent, message, version ->
+            wsManager.sendChecked(
+                NodeResponse.installProgress(
+                    traceId = "self-update",
+                    stage = stage,
+                    percent = percent,
+                    message = message,
+                    version = version
+                )
+            )
+        }
         StreamBridge.wsRef = wsManager
         visionManager = VisionManager(
             context = applicationContext,
@@ -140,19 +165,26 @@ class ActionExecutorService : AccessibilityService() {
             onRunShell = { command ->
                 shellController.run(command).let { Triple(it.success, it.stdout, it.stderr) }
             },
-            onInstallApk = { url, fileName ->
+            onInstallApk = { traceId, url, fileName ->
                 try {
+                    wsManager.sendChecked(NodeResponse.installProgress(traceId, NodeResponse.STAGE_DOWNLOADING, 0, "start download"))
                     if (!AppUpdateManager.canInstallPackages(applicationContext)) {
+                        wsManager.sendChecked(NodeResponse.installProgress(traceId, NodeResponse.STAGE_FAILED, message = "no install permission"))
                         false to "no REQUEST_INSTALL_PACKAGES permission"
                     } else {
                         val name = fileName?.takeIf { it.isNotBlank() } ?: "remote_install.apk"
                         val file = AppUpdateManager.downloadApk(applicationContext, url, name)
+                        wsManager.sendChecked(NodeResponse.installProgress(traceId, NodeResponse.STAGE_DOWNLOADED, 100, "download complete"))
+                        wsManager.sendChecked(NodeResponse.installProgress(traceId, NodeResponse.STAGE_INSTALLING, message = "starting install"))
                         // 标记远程安装，onAccessibilityEvent 会尝试自动点击系统安装确认对话框
                         remoteInstallAutoConfirmUntil = System.currentTimeMillis() + 120_000
                         AppUpdateManager.installApk(applicationContext, file)
+                        // The actual "pending_user" will be logged in InstallResultReceiver; we can send a stage here too
+                        wsManager.sendChecked(NodeResponse.installProgress(traceId, NodeResponse.STAGE_AWAITING_CONFIRM, message = "awaiting user install confirmation"))
                         true to "install initiated: ${file.name}"
                     }
                 } catch (e: Exception) {
+                    wsManager.sendChecked(NodeResponse.installProgress(traceId, NodeResponse.STAGE_FAILED, message = e.message))
                     false to (e.message ?: "install failed")
                 }
             },
@@ -307,8 +339,11 @@ class ActionExecutorService : AccessibilityService() {
             foregroundPackageName = pkg
         }
 
-        // 远程安装自动确认逻辑：当系统安装器弹窗出现时，尝试自动点“安装”
-        if (remoteInstallAutoConfirmUntil > System.currentTimeMillis() && isInstallerPackage(pkg)) {
+        // 远程安装或自更新自动确认逻辑：当系统安装器弹窗出现时，尝试自动点“安装”
+        val now = System.currentTimeMillis()
+        val wantConfirm = remoteInstallAutoConfirmUntil > now ||
+            AppUpdateManager.requestAutoConfirmUntil > now
+        if (wantConfirm && isInstallerPackage(pkg)) {
             tryAutoConfirmInstall(event)
         }
     }

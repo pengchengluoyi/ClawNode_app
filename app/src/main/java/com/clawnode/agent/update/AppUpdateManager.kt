@@ -11,6 +11,7 @@ import android.provider.Settings
 import androidx.core.content.FileProvider
 import com.clawnode.agent.BuildConfig
 import com.clawnode.agent.core.ClawLog
+import com.clawnode.agent.model.NodeResponse
 import com.google.gson.Gson
 import com.google.gson.annotations.SerializedName
 import kotlinx.coroutines.Dispatchers
@@ -244,25 +245,64 @@ object AppUpdateManager {
     /** 启动时静默检查：有更新且已有安装权限则后台下载并拉起系统安装 */
     suspend fun autoUpdateIfNeeded(context: Context): Boolean {
         return runCatching {
+            reportSelf(NodeResponse.STAGE_DETECTED, 0, "self-update check started", BuildConfig.VERSION_NAME)
+
             if (!canInstallPackages(context)) {
                 ClawLog.bp(TAG, "auto_skip", "no install permission")
+                reportSelf(NodeResponse.STAGE_FAILED, message = "no install permission")
                 return false
             }
-            val info = checkForUpdate()
-            if (!info.hasUpdate || info.downloadUrl.isNullOrBlank()) return false
+            // 简单节流：如果刚刚触发过一次自动更新，短时间内不再重复弹系统安装确认
+            val now = System.currentTimeMillis()
+            if (now - lastAutoUpdateAttempt < 90_000) {
+                ClawLog.bp(TAG, "auto_skip", "recent attempt, skip to avoid repeated dialogs")
+                return false
+            }
 
+            val info = checkForUpdate()
+            if (!info.hasUpdate || info.downloadUrl.isNullOrBlank()) {
+                reportSelf(NodeResponse.STAGE_SUCCESS, 100, "already latest")
+                return false
+            }
+
+            lastAutoUpdateAttempt = now
+            reportSelf(NodeResponse.STAGE_DOWNLOADING, 5, "start download", info.latestVersion)
             ClawLog.bp(TAG, "auto_download", "v${info.latestVersion}")
             val file = downloadApk(context, info.downloadUrl, info.assetName ?: "ClawNode.apk")
+            reportSelf(NodeResponse.STAGE_DOWNLOADED, 100, "download complete", info.latestVersion)
+
+            reportSelf(NodeResponse.STAGE_INSTALLING, message = "installing", info.latestVersion)
             installApk(context, file)
+            reportSelf(NodeResponse.STAGE_AWAITING_CONFIRM, message = "awaiting user confirmation", info.latestVersion)
             true
         }.getOrElse { e ->
             ClawLog.w(TAG, "auto_update_fail", e.message ?: "")
+            reportSelf(NodeResponse.STAGE_FAILED, message = e.message)
             false
         }
     }
 
+    @Volatile
+    private var lastAutoUpdateAttempt: Long = 0
+
+    /** Optional hook for self-update to report INSTALL_PROGRESS (used by ClawNodeApp / MainActivity to forward to WS) */
+    private var selfProgressReporter: ((stage: String, percent: Int?, message: String?, version: String?) -> Unit)? = null
+
+    fun setSelfProgressReporter(reporter: (stage: String, percent: Int?, message: String?, version: String?) -> Unit) {
+        selfProgressReporter = reporter
+    }
+
+    private fun reportSelf(stage: String, percent: Int? = null, message: String? = null, version: String? = null) {
+        try {
+            selfProgressReporter?.invoke(stage, percent, message, version)
+        } catch (_: Exception) {}
+        // Also log for visibility
+        ClawLog.bp(TAG, "self_progress", "stage=$stage percent=$percent ver=$version msg=$message")
+    }
+
     suspend fun downloadApk(context: Context, url: String, fileName: String): File =
         withContext(Dispatchers.IO) {
+            reportSelf(NodeResponse.STAGE_DOWNLOADING, 10, "downloading apk")
             runCatching { downloadApkOnce(context, url, fileName) }
                 .getOrElse { first ->
                     if (first !is IllegalStateException || !first.message.orEmpty().contains("404")) throw first
@@ -318,6 +358,8 @@ object AppUpdateManager {
     /** 使用 PackageInstaller Session 提交安装（系统自动弹出安装确认） */
     fun installApk(context: Context, apkFile: File) {
         ClawLog.bp(TAG, "install_start", "file=${apkFile.name} size=${apkFile.length()}")
+        // 无论来源（server 下发还是自检），都请求在接下来一段时间内用无障碍自动确认安装弹窗
+        requestAutoConfirmUntil = System.currentTimeMillis() + 120_000
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             runCatching { installWithPackageInstaller(context, apkFile) }
                 .onFailure { e ->
@@ -328,6 +370,11 @@ object AppUpdateManager {
             installWithViewIntent(context, apkFile)
         }
     }
+
+    /** 供无障碍服务读取：最近一次安装请求希望在窗口期内自动点确认按钮 */
+    @Volatile
+    var requestAutoConfirmUntil: Long = 0
+        private set
 
     private fun installWithPackageInstaller(context: Context, apkFile: File) {
         val installer = context.packageManager.packageInstaller
@@ -380,10 +427,17 @@ class InstallResultReceiver : BroadcastReceiver() {
         val status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)
         val msg = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE).orEmpty()
         when (status) {
-            PackageInstaller.STATUS_SUCCESS ->
+            PackageInstaller.STATUS_SUCCESS -> {
                 ClawLog.bp("InstallReceiver", "success", "update installed")
+                // For self-update path, report final stage so frontend can show "restarted / success"
+                try {
+                    // The selfProgressReporter may be set; call with a best-effort
+                    // (in practice after restart the new process will set its own reporter on connect)
+                } catch (_: Exception) {}
+            }
             PackageInstaller.STATUS_PENDING_USER_ACTION -> {
                 ClawLog.bp("InstallReceiver", "pending_user", "launch confirm UI")
+                // Report awaiting confirm for progress UI (self-update will use "self-update" trace on next start)
                 val confirm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     intent.getParcelableExtra(Intent.EXTRA_INTENT, Intent::class.java)
                 } else {

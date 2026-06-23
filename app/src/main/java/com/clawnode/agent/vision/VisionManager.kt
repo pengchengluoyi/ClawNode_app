@@ -69,6 +69,10 @@ class VisionManager(
         )
 
         if (!MediaProjectionHolder.hasAuthorization()) {
+            if (MediaProjectionHolder.hasPriorGrant(context)) {
+                // Previously granted — auto re-request (system dialog will appear once; user taps to re-grant for this session)
+                launchAuthorizeRequest()
+            }
             return Result.failure(
                 IllegalStateException(
                     "background screenshot requires screen capture authorization; open ClawNode app → 授权屏幕捕获"
@@ -84,6 +88,10 @@ class VisionManager(
         ClawLog.bp(TAG, "stream_start", "trace=${cmd.safeTraceId} fps=$fps")
 
         if (!MediaProjectionHolder.hasAuthorization()) {
+            if (MediaProjectionHolder.hasPriorGrant(context)) {
+                launchAuthorizeRequest(cmd.safeTraceId, fps, MediaProjectionRequestActivity.MODE_STREAM)
+                return
+            }
             val intent = Intent(context, MediaProjectionRequestActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 .putExtra(MediaProjectionRequestActivity.EXTRA_TRACE_ID, cmd.safeTraceId)
@@ -106,5 +114,14 @@ class VisionManager(
         private const val TAG = "VisionManager"
         const val DEFAULT_QUALITY = 80
         const val DEFAULT_FPS = 15
+    }
+
+    private fun launchAuthorizeRequest(traceId: String = "", fps: Int = DEFAULT_FPS, mode: String = MediaProjectionRequestActivity.MODE_AUTHORIZE) {
+        val intent = Intent(context, MediaProjectionRequestActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            .putExtra(MediaProjectionRequestActivity.EXTRA_TRACE_ID, traceId)
+            .putExtra(MediaProjectionRequestActivity.EXTRA_FPS, fps)
+            .putExtra(MediaProjectionRequestActivity.EXTRA_MODE, mode)
+        context.startActivity(intent)
     }
 }

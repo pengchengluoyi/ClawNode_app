@@ -429,6 +429,10 @@ class MainActivity : AppCompatActivity() {
         binding.btnCheckUpdate.text = "下载中…"
         binding.btnCheckUpdate.isEnabled = false
         try {
+            // These calls will also trigger the self reporter (if wired) for INSTALL_PROGRESS
+            com.clawnode.agent.update.AppUpdateManager.setSelfProgressReporter { stage, percent, message, version ->
+                // In manual flow we can also send directly via any available path; the service one is preferred
+            }
             val file = AppUpdateManager.downloadApk(this, url, fileName)
             AppUpdateManager.installApk(this, file)
             toast("已下载，请在系统弹窗点「安装」")

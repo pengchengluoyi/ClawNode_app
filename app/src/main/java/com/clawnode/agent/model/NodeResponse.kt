@@ -33,14 +33,35 @@ data class NodeResponse(
         @SerializedName("height") val height: Int? = null
     )
 
+    /** 安装/更新进度 data 体（自更新和其他 APK 安装共用） */
+    data class InstallProgressData(
+        @SerializedName("stage") val stage: String,
+        @SerializedName("percent") val percent: Int? = null,
+        @SerializedName("message") val message: String? = null,
+        @SerializedName("version") val version: String? = null,
+        @SerializedName("file_name") val fileName: String? = null
+    )
+
     companion object {
         const val TYPE_ACTION_RESULT = "ACTION_RESULT"
         const val TYPE_SCREENSHOT_RESULT = "SCREENSHOT_RESULT"
         const val TYPE_STREAM_FRAME = "STREAM_FRAME"
         const val TYPE_STREAM_STATUS = "STREAM_STATUS"
+        const val TYPE_INSTALL_PROGRESS = "INSTALL_PROGRESS"
 
         const val STATUS_SUCCESS = "success"
         const val STATUS_FAILED = "failed"
+
+        // Install / update stages (for progress bar on server/frontend)
+        const val STAGE_DETECTED = "detected"
+        const val STAGE_DOWNLOADING = "downloading"
+        const val STAGE_DOWNLOADED = "downloaded"
+        const val STAGE_INSTALLING = "installing"
+        const val STAGE_AWAITING_CONFIRM = "awaiting_confirm"
+        const val STAGE_INSTALLED = "installed"
+        const val STAGE_RESTARTED = "restarted"
+        const val STAGE_SUCCESS = "success"
+        const val STAGE_FAILED = "failed"
 
         fun actionResult(traceId: String, success: Boolean, message: String) = NodeResponse(
             traceId = traceId,
@@ -85,6 +106,25 @@ data class NodeResponse(
             data = StreamData(
                 status = if (success) STATUS_SUCCESS else STATUS_FAILED,
                 message = message
+            )
+        )
+
+        fun installProgress(
+            traceId: String? = null,
+            stage: String,
+            percent: Int? = null,
+            message: String? = null,
+            version: String? = null,
+            fileName: String? = null
+        ) = NodeResponse(
+            traceId = traceId ?: "self-update",
+            type = TYPE_INSTALL_PROGRESS,
+            data = InstallProgressData(
+                stage = stage,
+                percent = percent,
+                message = message,
+                version = version,
+                fileName = fileName
             )
         )
     }

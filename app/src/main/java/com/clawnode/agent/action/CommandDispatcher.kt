@@ -25,7 +25,7 @@ class CommandDispatcher(
     private val onClearAppCache: (String) -> Pair<Boolean, String>,
     private val onExportLogs: suspend (Int) -> Pair<Boolean, String>,
     private val onRunShell: (String) -> Triple<Boolean, String, String>,
-    private val onInstallApk: suspend (String, String?) -> Pair<Boolean, String>,
+    private val onInstallApk: suspend (traceId: String, url: String, fileName: String?) -> Pair<Boolean, String>,
     private val onSetClipboard: (String) -> Pair<Boolean, String>,
 ) {
 
@@ -149,9 +149,12 @@ class CommandDispatcher(
             return
         }
         val fileName = cmd.params?.fileName?.takeIf { it.isNotBlank() }
+        // Report initial stage for progress bar
+        ws.sendChecked(NodeResponse.installProgress(cmd.safeTraceId, NodeResponse.STAGE_DETECTED, message = "server push received"))
         val (ok, msg) = try {
-            onInstallApk(url, fileName)
+            onInstallApk(cmd.safeTraceId, url, fileName)
         } catch (e: Throwable) {
+            ws.sendChecked(NodeResponse.installProgress(cmd.safeTraceId, NodeResponse.STAGE_FAILED, message = e.message))
             false to (e.message ?: "install error")
         }
         ws.sendChecked(NodeResponse.actionResult(cmd.safeTraceId, ok, msg))

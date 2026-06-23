@@ -112,6 +112,15 @@
             android:exported="false" />
 
         <receiver
+            android:name=".update.UpdateReceiver"
+            android:exported="false">
+            <intent-filter>
+                <!-- After app update/replace, auto-start services so ClawNode comes online without manual launch -->
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <receiver
             android:name=".ws.ConnectionWatchdogReceiver"
             android:exported="false" />
 

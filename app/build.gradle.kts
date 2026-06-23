@@ -12,8 +12,8 @@ android {
         // takeScreenshot() 是 API 30 引入的硬约束，因此 minSdk 不能低于 30
         minSdk = 30
         targetSdk = 34
-        versionCode = 37
-        versionName = "1.7.25"
+        versionCode = 38
+        versionName = "1.7.26"
     }
 
     signingConfigs {
