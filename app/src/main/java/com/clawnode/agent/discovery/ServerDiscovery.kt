@@ -104,14 +104,16 @@ object ServerDiscovery {
 
     private fun parseGateway(info: NsdServiceInfo, serviceType: String): Gateway? {
         val lanHost = info.attributes?.get("lanHost")?.toString(Charsets.UTF_8)?.takeIf { it.isNotBlank() }
-        // Prefer lanHost (miniorange-xxx.local) for the actual wsUrl.
-        // This lets the device's mDNS resolver re-resolve the current IP if the gateway's IP changed (e.g. Wi-Fi switch).
-        // Fall back to the just-resolved hostAddress (IP) or hostName.
-        val resolvedHost = info.host?.hostAddress?.takeIf { it.isNotBlank() }
-            ?: info.host?.hostName?.takeIf { it.isNotBlank() }
-        val connectHost = lanHost ?: resolvedHost
+        // IMPORTANT: For the connect wsUrl we prefer the address that NSD just successfully resolved
+        // (info.host.hostAddress). This is a numeric LAN IP that is guaranteed to be reachable right now.
+        // We still record lanHost (the .local name) for display and potential future name-based reconnects.
+        // Relying on the .local hostname for immediate connect has proven unreliable on some Android devices
+        // (UnknownHostException even when mDNS service discovery itself succeeded).
+        val resolvedIp = info.host?.hostAddress?.takeIf { it.isNotBlank() }
+        val resolvedName = info.host?.hostName?.takeIf { it.isNotBlank() }
+        val reliableHost = resolvedIp ?: lanHost ?: resolvedName
         val port = if (info.port > 0) info.port else DEFAULT_PORT
-        if (connectHost.isNullOrBlank()) return null
+        if (reliableHost.isNullOrBlank()) return null
 
         val path = info.attributes?.get("path")?.toString(Charsets.UTF_8)?.takeIf { it.isNotBlank() }
             ?: DEFAULT_WS_PATH
@@ -121,8 +123,8 @@ object ServerDiscovery {
         val instanceId = info.serviceName.substringBefore('.')
 
         return Gateway(
-            wsUrl = buildWsUrl(connectHost, port, path),
-            host = resolvedHost ?: connectHost,
+            wsUrl = buildWsUrl(reliableHost, port, path),
+            host = resolvedIp ?: resolvedName ?: reliableHost,
             port = port,
             path = path,
             serviceName = info.serviceName,

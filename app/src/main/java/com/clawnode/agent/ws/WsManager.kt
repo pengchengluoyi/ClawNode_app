@@ -326,21 +326,50 @@ class WsManager(
     /** 
      * Resolve the WS URL to connect to.
      *
-     * - For "auto" (blank/ws://auto) or when a pairedGatewayId exists: always do mDNS discovery first.
-     *   Discovery (ServerDiscovery) now prefers the lanHost (xxx.local) advertised by the server.
-     *   This makes ClawNode resilient to the server's LAN IP changing (Wi-Fi switch, new DHCP lease, etc.).
-     *   The OS mDNS resolver will give the current IP when connecting to the .local name.
-     * - Fall back to any previously stored URL (could be IP or previous .local) only if discovery yields nothing.
+     * Strategy for reliability + resilience:
+     * - If we have a concrete saved URL that looks like a direct connect target (ws://IP or ws://name that we previously succeeded with), prefer it for fast startup.
+     * - Only do fresh mDNS discovery eagerly for "auto" mode (ws://auto / blank).
+     * - When pairedGatewayId is present, we still allow discovery, but we do NOT blindly replace a working saved IP with a discovery result that may contain an unresolvable .local name.
+     * - Real IP refresh happens on connect failure (after DISCOVERY_AFTER_FAILURES) via tryAutoDiscovery, or on explicit net change / manual discover.
+     * - Discovery (via paired id) finds the gateway via mDNS service records and returns the address that was resolved at that moment (usually the current LAN IP).
      */
     private suspend fun resolveConnectUrl(): String? {
         val current = settings
-        // Always attempt fresh mDNS when we are in auto mode OR have a paired gateway id.
-        // This prevents sticking to a stale fixed IP after the gateway's IP changes.
-        if (current.usesAutoDiscovery || current.pairedGatewayId.isNotBlank()) {
-            val fresh = runDiscovery("auto_or_paired")
+        val saved = current.wsUrl
+
+        // Pure auto mode (ws://auto or blank): always discover first to get a current address.
+        if (current.usesAutoDiscovery) {
+            val fresh = runDiscovery("auto_mode")
             if (!fresh.isNullOrBlank()) return fresh
+            return saved.takeIf { it.isNotBlank() }
         }
-        return current.wsUrl.takeIf { it.isNotBlank() }
+
+        val looksLikeNameBased = saved.contains(".local", ignoreCase = true)
+
+        // Concrete IP-based saved URL (the common happy path after pairing or previous successful discovery):
+        // use it directly for fast connect. We do NOT replace it eagerly with a discovery result.
+        // Refresh to a potentially new IP only happens on repeated failures (see connectLoop + tryAutoDiscovery)
+        // or explicit user "discover" action.
+        if ((saved.startsWith("ws://") || saved.startsWith("wss://")) && !looksLikeNameBased) {
+            return saved
+        }
+
+        // Saved URL is a .local name, or we have no usable saved URL but we are paired.
+        // In these cases do a fresh mDNS discovery. The discovery result now returns the address that
+        // was successfully resolved via NsdServiceInfo (usually the current LAN IP), which is much more
+        // reliable than trying to resolve the .local hostname from the device.
+        if (looksLikeNameBased || saved.isBlank() || current.pairedGatewayId.isNotBlank()) {
+            val reason = when {
+                looksLikeNameBased -> "name_to_ip_refresh"
+                saved.isBlank() -> "missing_url_with_pair"
+                else -> "paired_refresh"
+            }
+            val fresh = runDiscovery(reason)
+            if (!fresh.isNullOrBlank()) return fresh
+            // Discovery gave nothing useful — fall back to whatever we had (might be a name that works on this network).
+        }
+
+        return saved.takeIf { it.isNotBlank() }
     }
 
     private suspend fun tryAutoDiscovery(): Boolean {
