@@ -103,22 +103,26 @@ object ServerDiscovery {
     }
 
     private fun parseGateway(info: NsdServiceInfo, serviceType: String): Gateway? {
-        val host = info.host?.hostAddress?.takeIf { it.isNotBlank() }
+        val lanHost = info.attributes?.get("lanHost")?.toString(Charsets.UTF_8)?.takeIf { it.isNotBlank() }
+        // Prefer lanHost (miniorange-xxx.local) for the actual wsUrl.
+        // This lets the device's mDNS resolver re-resolve the current IP if the gateway's IP changed (e.g. Wi-Fi switch).
+        // Fall back to the just-resolved hostAddress (IP) or hostName.
+        val resolvedHost = info.host?.hostAddress?.takeIf { it.isNotBlank() }
             ?: info.host?.hostName?.takeIf { it.isNotBlank() }
+        val connectHost = lanHost ?: resolvedHost
         val port = if (info.port > 0) info.port else DEFAULT_PORT
-        if (host.isNullOrBlank()) return null
+        if (connectHost.isNullOrBlank()) return null
 
         val path = info.attributes?.get("path")?.toString(Charsets.UTF_8)?.takeIf { it.isNotBlank() }
             ?: DEFAULT_WS_PATH
         val displayName = info.attributes?.get("displayName")?.toString(Charsets.UTF_8)
             ?.takeIf { it.isNotBlank() }
             ?: info.serviceName.substringBefore('.')
-        val lanHost = info.attributes?.get("lanHost")?.toString(Charsets.UTF_8)?.takeIf { it.isNotBlank() }
         val instanceId = info.serviceName.substringBefore('.')
 
         return Gateway(
-            wsUrl = buildWsUrl(host, port, path),
-            host = host,
+            wsUrl = buildWsUrl(connectHost, port, path),
+            host = resolvedHost ?: connectHost,
             port = port,
             path = path,
             serviceName = info.serviceName,

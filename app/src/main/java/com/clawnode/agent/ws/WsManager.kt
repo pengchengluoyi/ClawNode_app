@@ -323,11 +323,24 @@ class WsManager(
         ClawLog.bp(TAG, "connect_loop", "exited manualClosed=$manualClosed authHalted=$authHalted")
     }
 
-    /** ws://auto 或空 URL 时先 mDNS 发现；手动 URL 失败时由 [tryAutoDiscovery] 自愈 */
+    /** 
+     * Resolve the WS URL to connect to.
+     *
+     * - For "auto" (blank/ws://auto) or when a pairedGatewayId exists: always do mDNS discovery first.
+     *   Discovery (ServerDiscovery) now prefers the lanHost (xxx.local) advertised by the server.
+     *   This makes ClawNode resilient to the server's LAN IP changing (Wi-Fi switch, new DHCP lease, etc.).
+     *   The OS mDNS resolver will give the current IP when connecting to the .local name.
+     * - Fall back to any previously stored URL (could be IP or previous .local) only if discovery yields nothing.
+     */
     private suspend fun resolveConnectUrl(): String? {
         val current = settings
-        if (!current.usesAutoDiscovery) return current.wsUrl
-        return runDiscovery("auto_mode")
+        // Always attempt fresh mDNS when we are in auto mode OR have a paired gateway id.
+        // This prevents sticking to a stale fixed IP after the gateway's IP changes.
+        if (current.usesAutoDiscovery || current.pairedGatewayId.isNotBlank()) {
+            val fresh = runDiscovery("auto_or_paired")
+            if (!fresh.isNullOrBlank()) return fresh
+        }
+        return current.wsUrl.takeIf { it.isNotBlank() }
     }
 
     private suspend fun tryAutoDiscovery(): Boolean {
@@ -448,12 +461,13 @@ class WsManager(
                 clearIfActive(ws)
                 stopHeartbeat()
                 ClawLog.e(TAG, "ws_failure", "http=${response?.code} msg=${t.message}", t)
+                val classified = classifyFailure(t.message ?: "HTTP ${response?.code}")
                 if (isAuthFailure(t, response)) {
                     if (!done.isCompleted) done.complete("auth: ${t.message}")
-                    handleAuthFailed(t.message ?: "HTTP ${response?.code}")
+                    handleAuthFailed(classified)
                     return
                 }
-                if (!authHalted) setState(ConnectionState.Disconnected(t.message ?: "failure"))
+                if (!authHalted) setState(ConnectionState.Disconnected(classified))
                 if (!done.isCompleted) done.complete("failure: ${t.message}")
                 // 后台断线后立即尝试重连，不等待 connectLoop 退避（OEM 可能很快冻结协程）
                 scope.launch {
@@ -703,6 +717,17 @@ class WsManager(
         connectJob?.cancel()
         connectJob = null
         setState(ConnectionState.AuthFailed(reason))
+    }
+
+    private fun classifyFailure(message: String?): String {
+        val m = message?.lowercase().orEmpty()
+        return when {
+            m.contains("failed to connect") || m.contains("connectexception") || m.contains("timeout") || m.contains("no route") ->
+                "network_unreachable: $message"
+            m.contains("401") || m.contains("403") || m.contains("policy violation") ->
+                "auth_rejected: $message"
+            else -> message ?: "unknown"
+        }
     }
 
     private fun isAuthFailure(t: Throwable, response: Response?): Boolean {

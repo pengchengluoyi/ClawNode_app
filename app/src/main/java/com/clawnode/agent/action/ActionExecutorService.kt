@@ -34,6 +34,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -59,6 +60,10 @@ class ActionExecutorService : AccessibilityService() {
     private var networkMonitor: NetworkMonitor? = null
     @Volatile
     private var foregroundPackageName: String = ""
+
+    /** 远程触发的安装在接下来的这段时间内尝试用无障碍自动确认系统安装弹窗 */
+    @Volatile
+    private var remoteInstallAutoConfirmUntil: Long = 0
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -142,6 +147,8 @@ class ActionExecutorService : AccessibilityService() {
                     } else {
                         val name = fileName?.takeIf { it.isNotBlank() } ?: "remote_install.apk"
                         val file = AppUpdateManager.downloadApk(applicationContext, url, name)
+                        // 标记远程安装，onAccessibilityEvent 会尝试自动点击系统安装确认对话框
+                        remoteInstallAutoConfirmUntil = System.currentTimeMillis() + 120_000
                         AppUpdateManager.installApk(applicationContext, file)
                         true to "install initiated: ${file.name}"
                     }
@@ -298,6 +305,43 @@ class ActionExecutorService : AccessibilityService() {
         val pkg = event?.packageName?.toString()?.trim().orEmpty()
         if (pkg.isNotBlank()) {
             foregroundPackageName = pkg
+        }
+
+        // 远程安装自动确认逻辑：当系统安装器弹窗出现时，尝试自动点“安装”
+        if (remoteInstallAutoConfirmUntil > System.currentTimeMillis() && isInstallerPackage(pkg)) {
+            tryAutoConfirmInstall(event)
+        }
+    }
+
+    private fun isInstallerPackage(pkg: String): Boolean {
+        val p = pkg.lowercase()
+        return p.contains("packageinstaller") || p.contains("installer") || p.contains("package_installer")
+    }
+
+    private fun tryAutoConfirmInstall(event: AccessibilityEvent?) {
+        if (event == null) return
+        val root = rootInActiveWindow ?: return
+        // 常见肯定按钮文案
+        val positiveTexts = listOf("安装", "确定安装", "install", "确认", "continue", "确认安装")
+        val nodes = root.findAccessibilityNodeInfosByText("")
+            .filter { node ->
+                val text = (node.text ?: node.contentDescription ?: "").toString().trim().lowercase()
+                positiveTexts.any { it in text } && node.isClickable && node.isEnabled
+            }
+
+        nodes.firstOrNull()?.let { node ->
+            val bounds = android.graphics.Rect()
+            node.getBoundsInScreen(bounds)
+            if (!bounds.isEmpty) {
+                val cx = bounds.centerX().toFloat()
+                val cy = bounds.centerY().toFloat()
+                ClawLog.bp(TAG, "auto_install_click", "tapping installer button at ($cx,$cy)")
+                // 必须异步调用 suspend 的 tap
+                scope.launch {
+                    gestureController.tap(cx, cy, 80)
+                }
+                remoteInstallAutoConfirmUntil = 0 // 只试一次
+            }
         }
     }
 
