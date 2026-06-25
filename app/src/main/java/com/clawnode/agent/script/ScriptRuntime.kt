@@ -177,7 +177,7 @@ class ScriptRuntime(
             "com.miui.permcenter",
             "settings",
         )
-        if expect.lowercase() in settingsFamily) {
+        if (expect.lowercase() in settingsFamily) {
             return ForegroundProbe.isSettingsLike(fg) || fg.contains("settings", ignoreCase = true)
         }
         return false
