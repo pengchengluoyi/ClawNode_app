@@ -132,15 +132,34 @@ class AppController(
     fun clearAppCache(packageName: String): Result {
         if (packageName.isBlank()) return Result(false, "CLEAR_APP_CACHE requires package")
         killApp(packageName)
+        return openAppDetails(packageName)
+    }
+
+    /** 打开系统「应用信息」页（应用详情 / 强制停止 / 存储）。 */
+    fun openAppDetails(packageName: String): Result {
+        if (packageName.isBlank()) return Result(false, "package required")
+        if (!isPackageInstalled(packageName)) {
+            return Result(false, "package not installed: $packageName")
+        }
         return try {
-            val intent = Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+            val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
                 data = android.net.Uri.parse("package:$packageName")
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             context.startActivity(intent)
-            Result(true, "opened app settings for $packageName (manual clear cache if needed)")
+            ClawLog.bp(TAG, "open_app_details", "pkg=$packageName")
+            val deadline = System.currentTimeMillis() + 3_000L
+            var fg = ""
+            while (System.currentTimeMillis() < deadline) {
+                fg = readForegroundPackage()
+                if (fg.isNotBlank() && !isShellPackage(fg)) break
+                Thread.sleep(200L)
+            }
+            val ok = fg.isNotBlank() && !isShellPackage(fg)
+            Result(ok, fg.ifBlank { "intent sent for $packageName" })
         } catch (e: Exception) {
-            Result(false, e.message ?: "clear cache failed")
+            ClawLog.e(TAG, "open_app_details_fail", "pkg=$packageName", e)
+            Result(false, e.message ?: "open app details failed")
         }
     }
 

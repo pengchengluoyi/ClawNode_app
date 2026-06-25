@@ -25,6 +25,8 @@ class ScriptRuntime(
 
     data class Result(val success: Boolean, val message: String, val output: String = "")
 
+    private data class StepResult(val ok: Boolean, val detail: String)
+
     private val gson = Gson()
     private val jsExecutor = Executors.newSingleThreadExecutor { r ->
         Thread(r, "claw-script-js").apply { isDaemon = true }
@@ -68,7 +70,12 @@ class ScriptRuntime(
                 }
                 val value = ctx.evaluateString(scope, source, "claw-exec.js", 1, null)
                 val out = value?.let { RhinoContext.toString(it) }?.trim().orEmpty()
-                Result(true, "js ok", out)
+                val fg = api.foreground()
+                val combined = buildString {
+                    if (out.isNotBlank()) appendLine(out)
+                    append("fg=").append(fg)
+                }.trim()
+                Result(true, "js ok", combined)
             } catch (e: Exception) {
                 Result(false, "js error: ${e.message}", "")
             } finally {
@@ -100,42 +107,81 @@ class ScriptRuntime(
             val step = steps[i].asJsonObject
             val op = step.get("op")?.asString?.lowercase().orEmpty()
             if (op.isBlank()) return Result(false, "dsl step $i missing op")
-            val ok = runStep(op, step)
-            logs.appendLine("step$i $op -> $ok")
-            if (!ok) return Result(false, "dsl step $i op=$op failed", logs.toString())
+            val result = runStep(op, step)
+            logs.appendLine("step$i $op -> ${result.ok} (${result.detail})")
+            if (!result.ok) return Result(false, "dsl step $i op=$op failed: ${result.detail}", logs.toString())
         }
         return Result(true, "dsl ok (${steps.size()} steps)", logs.toString().trim())
     }
 
-    private fun runStep(op: String, step: JsonObject): Boolean = when (op) {
-        "tap", "click" -> api.tap(
+    private fun runStep(op: String, step: JsonObject): StepResult = when (op) {
+        "tap", "click" -> stepBool(api.tap(
             num(step, "x"), num(step, "y"),
             num(step, "duration_ms", 80.0),
-        )
-        "swipe" -> api.swipe(
+        ))
+        "swipe" -> stepBool(api.swipe(
             num(step, "x1", num(step, "x")),
             num(step, "y1", num(step, "y")),
             num(step, "x2"), num(step, "y2"),
             num(step, "duration_ms", 300.0),
-        )
-        "key", "keyevent", "press_key" -> api.key(str(step, "key", str(step, "keyevent", "")))
-        "open_app", "launch_app" -> api.openApp(
-            str(step, "package", str(step, "pkg", "")),
-            step.get("activity")?.asString,
-        )
-        "close_app" -> api.closeApp(str(step, "package", str(step, "pkg", "")))
-        "shell", "run_shell" -> api.shellOk(str(step, "command", str(step, "cmd", "")))
-        "clipboard", "set_clipboard" -> api.setClipboard(str(step, "text", ""))
-        "input_text" -> api.inputText(
+        ))
+        "key", "keyevent", "press_key" -> stepBool(api.key(str(step, "key", str(step, "keyevent", ""))))
+        "open_app", "launch_app" -> {
+            val pkg = str(step, "package", str(step, "pkg", ""))
+            val ok = api.openApp(pkg, step.get("activity")?.asString)
+            StepResult(ok, "pkg=$pkg")
+        }
+        "open_app_details", "app_details", "open_app_settings" -> {
+            val pkg = str(step, "package", str(step, "pkg", ""))
+            val ok = api.openAppDetails(pkg)
+            StepResult(ok, "pkg=$pkg fg=${api.foreground()}")
+        }
+        "close_app" -> stepBool(api.closeApp(str(step, "package", str(step, "pkg", ""))))
+        "shell", "run_shell" -> {
+            val cmd = str(step, "command", str(step, "cmd", ""))
+            val out = api.shell(cmd)
+            val ok = !out.startsWith("FAIL:")
+            StepResult(ok, out.take(240))
+        }
+        "clipboard", "set_clipboard" -> stepBool(api.setClipboard(str(step, "text", "")))
+        "input_text" -> stepBool(api.inputText(
             str(step, "text", ""),
             optionalNum(step, "x"),
             optionalNum(step, "y"),
+        ))
+        "foreground", "get_foreground" -> {
+            val fg = api.foreground()
+            val expect = str(step, "expect", str(step, "package", str(step, "pkg", "")))
+            val ok = if (expect.isBlank()) fg.isNotBlank() else matchesForeground(fg, expect)
+            StepResult(ok, "fg=$fg" + if (expect.isNotBlank()) " expect=$expect" else "")
+        }
+        "wake", "wake_up" -> stepBool(api.wake())
+        "sleep", "wait" -> StepResult(true, "${num(step, "ms", num(step, "duration_ms", 500.0)).toLong()}ms").also {
+            api.sleep(num(step, "ms", num(step, "duration_ms", 500.0)))
+        }
+        "log" -> StepResult(true, str(step, "message", str(step, "text", ""))).also {
+            api.log(str(step, "message", str(step, "text", "")))
+        }
+        else -> StepResult(false, "unknown op")
+    }
+
+    private fun stepBool(ok: Boolean) = StepResult(ok, if (ok) "ok" else "failed")
+
+    private fun matchesForeground(fg: String, expect: String): Boolean {
+        if (fg.isBlank()) return false
+        if (fg.equals(expect, ignoreCase = true) || fg.contains(expect, ignoreCase = true)) return true
+        val settingsFamily = setOf(
+            "com.android.settings",
+            "com.miui.securitycenter",
+            "com.miui.permcenter",
+            "settings",
         )
-        "foreground", "get_foreground" -> true.also { api.foreground() }
-        "wake", "wake_up" -> api.wake()
-        "sleep", "wait" -> true.also { api.sleep(num(step, "ms", num(step, "duration_ms", 500.0))) }
-        "log" -> true.also { api.log(str(step, "message", str(step, "text", ""))) }
-        else -> false
+        if (expect.lowercase() in settingsFamily) {
+            return settingsFamily.any { token ->
+                token != "settings" && fg.contains(token, ignoreCase = true)
+            } || fg.contains("settings", ignoreCase = true)
+        }
+        return false
     }
 
     private fun str(obj: JsonObject, key: String, default: String = ""): String =

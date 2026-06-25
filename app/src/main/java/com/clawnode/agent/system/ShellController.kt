@@ -109,8 +109,9 @@ class ShellController(private val context: Context) {
         val proc = Runtime.getRuntime().exec(arrayOf("sh", "-c", command))
         val stdout = proc.inputStream.bufferedReader().readText()
         val stderr = proc.errorStream.bufferedReader().readText()
-        proc.waitFor(timeoutSec, TimeUnit.SECONDS)
-        val ok = proc.exitValue() == 0 || stdout.isNotBlank()
+        val finished = proc.waitFor(timeoutSec, TimeUnit.SECONDS)
+        val exit = if (finished) proc.exitValue() else -1
+        val ok = finished && exit == 0
         return Result(ok, stdout.trim(), stderr.trim())
     }
 

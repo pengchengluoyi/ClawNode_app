@@ -59,6 +59,12 @@ class ClawScriptApi(
         return r.success
     }
 
+    fun openAppDetails(packageName: String): Boolean {
+        val r = appController.openAppDetails(packageName.trim())
+        if (r.success) onUiMutation()
+        return r.success
+    }
+
     fun closeApp(packageName: String): Boolean {
         val r = appController.closeApp(packageName.trim())
         if (r.success) onUiMutation()
@@ -74,7 +80,7 @@ class ClawScriptApi(
         }
     }
 
-    fun shellOk(command: String): Boolean = shellController.runRaw(command).success
+    fun shellOk(command: String): Boolean = !shell(command).startsWith("FAIL:")
 
     fun setClipboard(text: String): Boolean {
         val r = clipboardController.setText(text)
