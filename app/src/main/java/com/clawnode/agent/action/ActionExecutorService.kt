@@ -19,6 +19,7 @@ import com.clawnode.agent.service.NodeForegroundService
 import com.clawnode.agent.pairing.PairingBridge
 import com.clawnode.agent.pairing.PairingHttpServer
 import com.clawnode.agent.system.AppController
+import com.clawnode.agent.system.ClipboardController
 import com.clawnode.agent.system.TextInputController
 import com.clawnode.agent.system.ShellController
 import com.clawnode.agent.update.AppUpdateManager
