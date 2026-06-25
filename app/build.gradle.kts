@@ -12,8 +12,8 @@ android {
         // takeScreenshot() 是 API 30 引入的硬约束，因此 minSdk 不能低于 30
         minSdk = 30
         targetSdk = 34
-        versionCode = 42
-        versionName = "1.7.30"
+        versionCode = 44
+        versionName = "1.8.0"
     }
 
     signingConfigs {
@@ -77,4 +77,7 @@ dependencies {
 
     // JSON 解析
     implementation("com.google.code.gson:gson:2.11.0")
+
+    // EXEC_SCRIPT：沙箱 JavaScript（Server 下发脚本，免发版扩展能力）
+    implementation("org.mozilla:rhino:1.7.15")
 }

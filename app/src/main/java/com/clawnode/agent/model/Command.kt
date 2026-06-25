@@ -59,6 +59,12 @@ data class Command(
         @SerializedName("file_name") val fileName: String? = null,
         /** SET_CLIPBOARD / INPUT_TEXT：文本内容 */
         @SerializedName("text") val text: String? = null,
+        /** EXEC_SCRIPT：脚本语言 dsl | js */
+        @SerializedName("language") val language: String? = null,
+        /** EXEC_SCRIPT：脚本正文（DSL JSON 或 JavaScript） */
+        @SerializedName("script") val script: String? = null,
+        /** EXEC_SCRIPT：执行超时毫秒 */
+        @SerializedName("timeout_ms") val scriptTimeoutMs: Long? = null,
         /** 当 command == "control" 时，子动作如 "tap"、"swipe" */
         @SerializedName("action") val action: String? = null
     )
@@ -85,6 +91,7 @@ data class Command(
         const val INSTALL_APK = "INSTALL_APK"
         const val SET_CLIPBOARD = "SET_CLIPBOARD"
         const val INPUT_TEXT = "INPUT_TEXT"
+        const val EXEC_SCRIPT = "EXEC_SCRIPT"
         const val CONTROL = "CONTROL"
         const val GET_INSTALLED_APPS = "GET_INSTALLED_APPS"
     }

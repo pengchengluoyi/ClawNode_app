@@ -7,7 +7,10 @@ import com.clawnode.agent.vision.VisionManager
 import com.clawnode.agent.ws.WsManager
 import kotlinx.coroutines.CoroutineScope
 import com.clawnode.agent.log.LogUploadManager
+import com.clawnode.agent.script.ScriptRuntime
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import com.clawnode.agent.system.AppController.InstalledApp as AppInfo
 
 /**
@@ -29,6 +32,7 @@ class CommandDispatcher(
     private val onInstallApk: suspend (traceId: String, url: String, fileName: String?) -> Pair<Boolean, String>,
     private val onSetClipboard: (String) -> Pair<Boolean, String>,
     private val onInputText: (String, Int?, Int?) -> Pair<Boolean, String>,
+    private val onExecScript: (String, String, Long) -> Triple<Boolean, String, String>,
     private val onGetInstalledApps: () -> List<com.clawnode.agent.system.AppController.InstalledApp>,
 ) {
 
@@ -73,6 +77,7 @@ class CommandDispatcher(
             Command.INSTALL_APK, "INSTALL_APK", "INSTALLAPK" -> handleInstallApk(cmd)
             Command.SET_CLIPBOARD, "SET_CLIPBOARD", "CLIPBOARD" -> handleSetClipboard(cmd)
             Command.INPUT_TEXT, "INPUT_TEXT" -> handleInputText(cmd)
+            Command.EXEC_SCRIPT, "EXEC_SCRIPT", "RUN_SCRIPT", "EXEC_CODE" -> handleExecScript(cmd)
             Command.GET_INSTALLED_APPS, "GET_INSTALLED_APPS" -> handleGetInstalledApps(cmd)
             else -> ws.sendChecked(
                 NodeResponse.actionResult(cmd.safeTraceId, false, "unknown command=${cmd.command} (effective=$key)")
@@ -91,6 +96,7 @@ class CommandDispatcher(
         }
         val fg = actionExecutorForegroundPackage()
         ClawLog.bp(TAG, "open_app_result", "trace=${cmd.safeTraceId} pkg=$pkg ok=$ok fg=$fg")
+        if (ok) vision.invalidateScreenshotCache()
         ws.sendChecked(NodeResponse.actionResult(cmd.safeTraceId, ok, msg))
     }
 
@@ -183,7 +189,29 @@ class CommandDispatcher(
             false to (it.message ?: "input text error")
         }
         ClawLog.bp(TAG, "input_text_done", "trace=${cmd.safeTraceId} ok=$ok len=${text.length}")
+        if (ok) vision.invalidateScreenshotCache()
         ws.sendChecked(NodeResponse.actionResult(cmd.safeTraceId, ok, msg))
+    }
+
+    private suspend fun handleExecScript(cmd: Command) {
+        val script = cmd.params?.script
+        if (script.isNullOrBlank()) {
+            ws.sendChecked(NodeResponse.actionResult(cmd.safeTraceId, false, "EXEC_SCRIPT requires script"))
+            return
+        }
+        val language = cmd.params?.language.orEmpty()
+        val timeout = cmd.params?.scriptTimeoutMs ?: ScriptRuntime.DEFAULT_TIMEOUT_MS
+        val (ok, msg, output) = withContext(Dispatchers.IO) {
+            runCatching { onExecScript(script, language, timeout) }.getOrElse {
+                Triple(false, it.message ?: "exec script error", "")
+            }
+        }
+        ClawLog.bp(
+            TAG, "exec_script_done",
+            "trace=${cmd.safeTraceId} ok=$ok lang=${language.ifBlank { "dsl" }} outLen=${output.length}",
+        )
+        if (ok) vision.invalidateScreenshotCache()
+        ws.sendChecked(NodeResponse.shellResult(cmd.safeTraceId, ok, output.ifBlank { msg }, if (ok) "" else msg))
     }
 
     private fun handleSetClipboard(cmd: Command) {
@@ -205,6 +233,7 @@ class CommandDispatcher(
             return
         }
         val ok = runCatching { onKeyEvent(key) }.getOrDefault(false)
+        if (ok) vision.invalidateScreenshotCache()
         ws.sendChecked(NodeResponse.actionResult(cmd.safeTraceId, ok, if (ok) "key $key dispatched" else "key $key unsupported"))
     }
 
@@ -220,6 +249,7 @@ class CommandDispatcher(
             p.durationMs ?: GestureController.DEFAULT_TAP_MS
         )
         ClawLog.bp(TAG, "tap_done", "trace=${cmd.safeTraceId} ok=${r.success}")
+        if (r.success) vision.invalidateScreenshotCache()
         ws.sendChecked(NodeResponse.actionResult(cmd.safeTraceId, r.success, r.message))
     }
 
@@ -235,6 +265,7 @@ class CommandDispatcher(
             p.durationMs ?: GestureController.DEFAULT_SWIPE_MS
         )
         ClawLog.bp(TAG, "swipe_done", "trace=${cmd.safeTraceId} ok=${r.success}")
+        if (r.success) vision.invalidateScreenshotCache()
         ws.sendChecked(NodeResponse.actionResult(cmd.safeTraceId, r.success, r.message))
     }
 

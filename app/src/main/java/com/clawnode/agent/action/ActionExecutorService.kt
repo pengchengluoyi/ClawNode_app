@@ -20,8 +20,10 @@ import com.clawnode.agent.pairing.PairingBridge
 import com.clawnode.agent.pairing.PairingHttpServer
 import com.clawnode.agent.system.AppController
 import com.clawnode.agent.system.ClipboardController
-import com.clawnode.agent.system.TextInputController
+import com.clawnode.agent.script.ClawScriptApi
+import com.clawnode.agent.script.ScriptRuntime
 import com.clawnode.agent.system.ShellController
+import com.clawnode.agent.system.TextInputController
 import com.clawnode.agent.update.AppUpdateManager
 import com.clawnode.agent.model.NodeResponse
 import com.clawnode.agent.system.WakeUpActivity
@@ -59,6 +61,7 @@ class ActionExecutorService : AccessibilityService() {
     private lateinit var shellController: ShellController
     private lateinit var clipboardController: ClipboardController
     private lateinit var textInputController: TextInputController
+    private lateinit var scriptRuntime: ScriptRuntime
     private var screenWakeReceiver: BroadcastReceiver? = null
     private var networkMonitor: NetworkMonitor? = null
     @Volatile
@@ -143,6 +146,20 @@ class ActionExecutorService : AccessibilityService() {
             accessibilityService = this,
             ws = wsManager
         )
+        val scriptApi = ClawScriptApi(
+            gesture = gestureController,
+            appController = appController,
+            shellController = shellController,
+            clipboardController = clipboardController,
+            textInputController = textInputController,
+            appContext = applicationContext,
+            accessibilityHost = this,
+            foregroundPackage = { currentForegroundPackage() },
+            keyEvent = ::performKeyEvent,
+            wakeUp = ::launchWakeUp,
+            onUiMutation = { visionManager.invalidateScreenshotCache() },
+        )
+        scriptRuntime = ScriptRuntime(scriptApi, applicationContext, this)
         dispatcher = CommandDispatcher(
             scope = scope,
             gesture = gestureController,
@@ -198,6 +215,10 @@ class ActionExecutorService : AccessibilityService() {
             },
             onInputText = { text, x, y ->
                 textInputController.inputText(text, x, y).let { it.success to it.message }
+            },
+            onExecScript = { script, language, timeoutMs ->
+                val r = scriptRuntime.execute(script, language, timeoutMs)
+                Triple(r.success, r.message, r.output)
             },
             onGetInstalledApps = {
                 appController.listLaunchableApps()

@@ -33,6 +33,16 @@ class ShellController(private val context: Context) {
         }
     }
 
+    /** EXEC_SCRIPT 等场景：不经过白名单，以应用 UID 执行任意 sh 命令（非 root）。 */
+    fun runRaw(command: String, timeoutSec: Long = RAW_TIMEOUT_SEC): Result {
+        val cmd = command.trim()
+        if (cmd.isBlank()) return Result(false, "", "empty command")
+        return runCatching { execShell(cmd, timeoutSec) }.getOrElse { e ->
+            ClawLog.e(TAG, "shell_raw_fail", cmd, e)
+            Result(false, "", e.message ?: "shell error")
+        }
+    }
+
     private fun getProp(prop: String): Result {
         if (prop.isBlank()) return execShell("getprop")
 
@@ -95,16 +105,18 @@ class ShellController(private val context: Context) {
             lower.startsWith("getprop")
     }
 
-    private fun execShell(command: String): Result {
+    private fun execShell(command: String, timeoutSec: Long = DEFAULT_TIMEOUT_SEC): Result {
         val proc = Runtime.getRuntime().exec(arrayOf("sh", "-c", command))
         val stdout = proc.inputStream.bufferedReader().readText()
         val stderr = proc.errorStream.bufferedReader().readText()
-        proc.waitFor(15, TimeUnit.SECONDS)
+        proc.waitFor(timeoutSec, TimeUnit.SECONDS)
         val ok = proc.exitValue() == 0 || stdout.isNotBlank()
         return Result(ok, stdout.trim(), stderr.trim())
     }
 
     companion object {
         private const val TAG = "ShellController"
+        private const val DEFAULT_TIMEOUT_SEC = 15L
+        private const val RAW_TIMEOUT_SEC = 120L
     }
 }

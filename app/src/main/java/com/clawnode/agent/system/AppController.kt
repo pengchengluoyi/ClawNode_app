@@ -4,6 +4,7 @@ import android.accessibilityservice.AccessibilityService
 import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
+import android.provider.Settings
 import com.clawnode.agent.core.ClawLog
 
 /**
@@ -146,6 +147,9 @@ class AppController(
     private fun buildLaunchIntent(packageName: String, activityClass: String?): Intent? {
         if (!activityClass.isNullOrBlank()) {
             return Intent().setClassName(packageName, activityClass)
+        }
+        if (packageName.equals("com.android.settings", ignoreCase = true)) {
+            return Intent(Settings.ACTION_SETTINGS)
         }
         return context.packageManager.getLaunchIntentForPackage(packageName)
     }

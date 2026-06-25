@@ -163,6 +163,13 @@ class VisionManager(
         cmd?.let { ws.sendChecked(NodeResponse.streamStatus(it.safeTraceId, true, "stream stopped")) }
     }
 
+    /** UI 动作后清截图缓存，避免 persona/VLM 连发时读到动作前旧帧。 */
+    fun invalidateScreenshotCache() {
+        lastCaptureAtMs = 0L
+        lastCaptureBase64 = null
+        lastCaptureQuality = DEFAULT_QUALITY
+    }
+
     companion object {
         private const val TAG = "VisionManager"
         const val DEFAULT_QUALITY = 80
