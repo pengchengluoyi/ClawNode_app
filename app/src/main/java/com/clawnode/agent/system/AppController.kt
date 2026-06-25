@@ -14,6 +14,12 @@ class AppController(
     private val context: Context,
     private val accessibilityService: AccessibilityService? = null,
     private val shellController: ShellController? = null,
+    /**
+     * 可靠的前台包名提供者（由 ActionExecutorService 注入 currentForegroundPackage）。
+     * 它带有 onAccessibilityEvent 持续更新的事件缓存，能在刚拉起别的 app、
+     * rootInActiveWindow 还读不到时给出正确包名 —— 解决 fg=? 误判失败。
+     */
+    private val foregroundProvider: (() -> String)? = null,
 ) {
 
     data class Result(val success: Boolean, val message: String)
@@ -247,8 +253,13 @@ class AppController(
         return comp.packageName to comp.className
     }
 
-    private fun readForegroundPackage(): String =
-        ForegroundProbe.read(accessibilityService, shellController)
+    private fun readForegroundPackage(): String {
+        // 优先用注入的事件缓存提供者（最可靠）；其次直接探测 a11y 窗口 / dumpsys
+        foregroundProvider?.let { provider ->
+            runCatching { provider() }.getOrNull()?.trim()?.takeIf { it.isNotBlank() }?.let { return it }
+        }
+        return ForegroundProbe.read(accessibilityService, shellController)
+    }
 
     fun closeApp(packageName: String): Result {
         if (packageName.isBlank()) {

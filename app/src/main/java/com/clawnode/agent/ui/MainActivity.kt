@@ -38,6 +38,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private val config by lazy { ConfigManager.get(this) }
 
+    /** 一键授权引导的续跑状态：跳转系统页后，用户返回本页时继续下一步。 */
+    private var pendingGrantSteps: List<Pair<String, () -> Unit>>? = null
+    private var pendingGrantIndex: Int = 0
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         ClawLog.bp(TAG, "onCreate", "main activity v${BuildConfig.VERSION_NAME}")
@@ -70,6 +74,12 @@ class MainActivity : AppCompatActivity() {
         ClawLog.bp(TAG, "onResume", "refresh states")
         runCatching { refreshPermissionStates() }
             .onFailure { e -> ClawLog.e(TAG, "refresh_fail", "", e) }
+        // 一键授权引导续跑：从系统设置页返回后，自动弹出下一步
+        pendingGrantSteps?.let { steps ->
+            pendingGrantSteps = null
+            val next = pendingGrantIndex
+            binding.root.post { showGrantStep(steps, next) }
+        }
     }
 
     private fun loadConfigIntoInputs() {
@@ -135,6 +145,80 @@ class MainActivity : AppCompatActivity() {
         binding.btnWake.setOnClickListener {
             SystemController.wakeUpScreen(this)
         }
+        binding.btnGrantAll.setOnClickListener { runGrantAllFlow() }
+    }
+
+    /**
+     * 一键授权：把所有需要手动开启的权限串成一条引导链，依次弹出，点最少的次数全开。
+     *
+     * 说明：能由代码直接申请的（通知运行时权限）会直接弹系统授权框；
+     * 其余系统级开关（无障碍、悬浮窗、电池优化、安装未知应用、以及小米的
+     * 自启动/后台弹出界面/锁屏显示）Android 不提供自动授予 API，只能逐个跳到
+     * 对应系统页由用户开启 —— 这里用一条对话框链把它们串起来，逐项跳转。
+     */
+    private fun runGrantAllFlow() {
+        // 先直接请求可运行时授予的权限（通知）
+        requestNotificationPermissionIfNeeded()
+
+        val steps = mutableListOf<Pair<String, () -> Unit>>()
+
+        if (!SystemController.isAccessibilityEnabled(this)) {
+            steps += "开启无障碍服务（核心，必开）" to {
+                if (!SystemController.isRestrictedSettingsAllowed(this)) showRestrictedSettingsGuide()
+                else SystemController.openAccessibilitySettings(this)
+            }
+        }
+        if (!SystemController.canDrawOverlays(this)) {
+            steps += "开启悬浮窗 / 显示在其他应用上层（后台拉起应用必开）" to {
+                SystemController.requestOverlayPermission(this)
+            }
+        }
+        if (!SystemController.isBatteryOptimizationIgnored(this)) {
+            steps += "电池优化选「不优化 / 无限制」（防熄屏掉线）" to {
+                runCatching { SystemController.requestIgnoreBatteryOptimizations(this) }
+                    .onFailure { SystemController.openAppDetailsSettings(this) }
+            }
+        }
+        if (!AppUpdateManager.canInstallPackages(this)) {
+            steps += "允许安装未知应用（自动更新必开）" to {
+                AppUpdateManager.openInstallPermissionSettings(this)
+            }
+        }
+        // 小米专属开关（自启动 / 后台弹出界面 / 锁屏显示）始终引导一次：
+        // 系统无法读取其状态，也无法自动开启，更新/重装后可能被重置，必须手动确认。
+        steps += "小米权限管理：开启「自启动」「后台弹出界面」「锁屏显示」（必开，且无法自动授予）" to {
+            SystemController.openMiuiPermissionEditor(this)
+        }
+
+        showGrantStep(steps, 0)
+    }
+
+    private fun showGrantStep(steps: List<Pair<String, () -> Unit>>, index: Int) {
+        if (index >= steps.size) {
+            AlertDialog.Builder(this)
+                .setTitle("授权引导完成")
+                .setMessage(
+                    "已走完全部步骤。若某项当时未开，可随时点「一键授权」重新走一遍。\n\n" +
+                        "提示：小米的「自启动 / 后台弹出界面 / 锁屏显示」在系统更新或重装后可能被重置，" +
+                        "若远程打开应用又失败，回到这里再开一次即可。"
+                )
+                .setPositiveButton("知道了", null)
+                .show()
+            return
+        }
+        val (title, action) = steps[index]
+        AlertDialog.Builder(this)
+            .setTitle("授权 ${index + 1}/${steps.size}")
+            .setMessage(title)
+            .setPositiveButton("去开启") { _, _ ->
+                runCatching { action() }
+                // 跳转设置后，用户返回本页会触发 onResume，这里直接排队下一步
+                pendingGrantSteps = steps
+                pendingGrantIndex = index + 1
+            }
+            .setNeutralButton("跳过此项") { _, _ -> showGrantStep(steps, index + 1) }
+            .setNegativeButton("退出引导", null)
+            .show()
     }
 
     private fun discoverGateway() {

@@ -88,7 +88,7 @@ class ActionExecutorService : AccessibilityService() {
 
         gestureController = GestureController(this)
         shellController = ShellController(applicationContext)
-        appController = AppController(applicationContext, this, shellController).also {
+        appController = AppController(applicationContext, this, shellController, ::currentForegroundPackage).also {
             it.onWakeUp = ::launchWakeUp
         }
         clipboardController = ClipboardController(applicationContext)
