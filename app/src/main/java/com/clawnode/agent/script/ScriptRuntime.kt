@@ -2,6 +2,7 @@ package com.clawnode.agent.script
 
 import android.content.Context
 import com.clawnode.agent.core.ClawLog
+import com.clawnode.agent.system.ForegroundProbe
 import com.google.gson.Gson
 import com.google.gson.JsonArray
 import com.google.gson.JsonElement
@@ -176,10 +177,8 @@ class ScriptRuntime(
             "com.miui.permcenter",
             "settings",
         )
-        if (expect.lowercase() in settingsFamily) {
-            return settingsFamily.any { token ->
-                token != "settings" && fg.contains(token, ignoreCase = true)
-            } || fg.contains("settings", ignoreCase = true)
+        if expect.lowercase() in settingsFamily) {
+            return ForegroundProbe.isSettingsLike(fg) || fg.contains("settings", ignoreCase = true)
         }
         return false
     }

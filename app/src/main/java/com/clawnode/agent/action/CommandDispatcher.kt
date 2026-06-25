@@ -91,6 +91,7 @@ class CommandDispatcher(
             ws.sendChecked(NodeResponse.actionResult(cmd.safeTraceId, false, "OPEN_APP requires package"))
             return
         }
+        runCatching { onWakeUp() }
         val (ok, msg) = runCatching { onLaunchApp(pkg, cmd.params?.activity) }.getOrElse {
             false to (it.message ?: "launch error")
         }
@@ -179,11 +180,13 @@ class CommandDispatcher(
             ws.sendChecked(NodeResponse.actionResult(cmd.safeTraceId, false, "INPUT_TEXT requires text"))
             return
         }
+        runCatching { onWakeUp() }
+        kotlinx.coroutines.delay(700)
         val x = cmd.params?.x
         val y = cmd.params?.y
         if (x != null && y != null) {
             gesture.tap(x.toFloat(), y.toFloat(), cmd.params?.durationMs ?: GestureController.DEFAULT_TAP_MS)
-            kotlinx.coroutines.delay(250)
+            kotlinx.coroutines.delay(350)
         }
         val (ok, msg) = runCatching { onInputText(text, x, y) }.getOrElse {
             false to (it.message ?: "input text error")

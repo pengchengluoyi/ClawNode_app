@@ -19,6 +19,7 @@ import com.clawnode.agent.service.NodeForegroundService
 import com.clawnode.agent.pairing.PairingBridge
 import com.clawnode.agent.pairing.PairingHttpServer
 import com.clawnode.agent.system.AppController
+import com.clawnode.agent.system.ForegroundProbe
 import com.clawnode.agent.system.ClipboardController
 import com.clawnode.agent.script.ClawScriptApi
 import com.clawnode.agent.script.ScriptRuntime
@@ -86,7 +87,9 @@ class ActionExecutorService : AccessibilityService() {
         NodeForegroundService.start(applicationContext)
 
         gestureController = GestureController(this)
-        appController = AppController(applicationContext, this)
+        appController = AppController(applicationContext, this, shellController).also {
+            it.onWakeUp = ::launchWakeUp
+        }
         shellController = ShellController(applicationContext)
         clipboardController = ClipboardController(applicationContext)
         textInputController = TextInputController(this, clipboardController)
@@ -427,9 +430,8 @@ class ActionExecutorService : AccessibilityService() {
 
     /** 优先读 [rootInActiveWindow] 实时包名，避免 a11y 事件缓存滞后（如 OPEN_APP 后仍报桌面）。 */
     fun currentForegroundPackage(): String {
-        val active = runCatching {
-            rootInActiveWindow?.packageName?.toString()?.trim().orEmpty()
-        }.getOrDefault("")
+        val sc = if (::shellController.isInitialized) shellController else null
+        val active = ForegroundProbe.read(this, sc)
         if (active.isNotBlank()) {
             foregroundPackageName = active
             return active

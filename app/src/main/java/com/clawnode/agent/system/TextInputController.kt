@@ -19,37 +19,53 @@ class TextInputController(
         if (text.isEmpty()) {
             return Result(false, "INPUT_TEXT requires text")
         }
-        val root = accessibilityService.rootInActiveWindow
-            ?: return Result(false, "no active window")
-
-        var target = findFocusedEditable(root)
-        if (target == null && tapX != null && tapY != null) {
-            target = findEditableNear(root, tapX, tapY)
-        }
-        if (target == null) {
-            root.recycle()
-            return Result(false, "no editable input field focused")
-        }
-
-        return try {
-            val setOk = performSetText(target, text)
-            if (setOk) {
-                ClawLog.bp(TAG, "input_text_set", "len=${text.length}")
-                Result(true, "text set (${text.length} chars)")
-            } else {
-                clipboardController.setText(text)
-                val pasteOk = target.performAction(AccessibilityNodeInfo.ACTION_PASTE)
-                if (pasteOk) {
-                    ClawLog.bp(TAG, "input_text_paste", "len=${text.length}")
-                    Result(true, "text pasted (${text.length} chars)")
-                } else {
-                    Result(false, "set text and paste both failed")
+        var lastErr = "no active window"
+        repeat(4) { attempt ->
+            val root = accessibilityService.rootInActiveWindow
+            if (root == null) {
+                lastErr = "no active window (wake screen and open app with input field first)"
+                if (attempt < 3) {
+                    Thread.sleep(350)
+                    return@repeat
                 }
+                return Result(false, lastErr)
             }
-        } finally {
-            target.recycle()
-            root.recycle()
+
+            var target = findFocusedEditable(root)
+            if (target == null && tapX != null && tapY != null) {
+                target = findEditableNear(root, tapX, tapY)
+            }
+            if (target == null) {
+                root.recycle()
+                lastErr = "no editable input field (tap input box first or provide x,y)"
+                if (attempt < 3) {
+                    Thread.sleep(300)
+                    return@repeat
+                }
+                return Result(false, lastErr)
+            }
+
+            return try {
+                val setOk = performSetText(target, text)
+                if (setOk) {
+                    ClawLog.bp(TAG, "input_text_set", "len=${text.length}")
+                    Result(true, "text set (${text.length} chars)")
+                } else {
+                    clipboardController.setText(text)
+                    val pasteOk = target.performAction(AccessibilityNodeInfo.ACTION_PASTE)
+                    if (pasteOk) {
+                        ClawLog.bp(TAG, "input_text_paste", "len=${text.length}")
+                        Result(true, "text pasted (${text.length} chars)")
+                    } else {
+                        Result(false, "set text and paste both failed (focus input field first)")
+                    }
+                }
+            } finally {
+                target.recycle()
+                root.recycle()
+            }
         }
+        return Result(false, lastErr)
     }
 
     fun pasteFocused(): Result {
