@@ -47,20 +47,10 @@ class AppController(
                 return Result(false, "no launch intent for $packageName (not installed or no launcher)")
             }
 
-            intent.addFlags(
-                Intent.FLAG_ACTIVITY_NEW_TASK or
-                    Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED or
-                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                    Intent.FLAG_ACTIVITY_SINGLE_TOP,
-            )
-            startInForeground(intent)
-            ClawLog.bp(TAG, "open_app_intent_sent", "pkg=$resolvedPackage activity=${activityClass.orEmpty()}")
+            prepareWake()
+            val launchIntent = Intent(intent).apply { addLaunchFlags() }
 
-            var fg = waitForForegroundPackage(resolvedPackage, timeoutMs = 8_000L)
-            if (!isLaunchSuccess(resolvedPackage, fg)) {
-                tryShellLaunch(resolvedPackage, activityClass)
-                fg = waitForForegroundPackage(resolvedPackage, timeoutMs = 5_000L)
-            }
+            var fg = tryLaunchSequence(resolvedPackage, launchIntent, activityClass)
             ClawLog.bp(TAG, "open_app_result", "pkg=$resolvedPackage fg=${fg.ifBlank { "?" }}")
             if (isLaunchSuccess(resolvedPackage, fg)) {
                 Result(true, fg)
@@ -74,6 +64,88 @@ class AppController(
             ClawLog.e(TAG, "open_app_fail", "pkg=$packageName", e)
             Result(false, "launch failed: ${e.message}")
         }
+    }
+
+    fun openAppDetails(packageName: String): Result {
+        if (packageName.isBlank()) return Result(false, "package required")
+        if (!isPackageInstalled(packageName)) {
+            return Result(false, "package not installed: $packageName")
+        }
+        return try {
+            prepareWake()
+            val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                data = android.net.Uri.parse("package:$packageName")
+                addLaunchFlags()
+            }
+            var fg = tryLaunchSequence("com.android.settings", intent, null)
+            ClawLog.bp(TAG, "open_app_details", "pkg=$packageName fg=${fg.ifBlank { "?" }}")
+            val ok = isLaunchSuccess("com.android.settings", fg)
+            Result(ok, fg.ifBlank { "foreground unavailable after open details" })
+        } catch (e: Exception) {
+            ClawLog.e(TAG, "open_app_details_fail", "pkg=$packageName", e)
+            Result(false, e.message ?: "open app details failed")
+        }
+    }
+
+    private fun prepareWake() {
+        onWakeUp?.invoke()
+        Thread.sleep(650L)
+    }
+
+    /** 与 EXEC_SCRIPT JS 的 context.startActivity 相同路径，再跳板 / shell 兜底。 */
+    private fun tryLaunchSequence(
+        targetPackage: String,
+        launchIntent: Intent,
+        activityClass: String?,
+    ): String {
+        startViaAppContext(launchIntent, "primary")
+        var fg = waitForForegroundPackage(targetPackage, timeoutMs = 4_500L)
+        if (isLaunchSuccess(targetPackage, fg)) return fg
+
+        accessibilityService?.let { svc ->
+            runCatching {
+                svc.startActivity(Intent(launchIntent).apply { addLaunchFlags() })
+                ClawLog.bp(TAG, "open_app_a11y", "pkg=$targetPackage")
+            }.onFailure { e ->
+                ClawLog.w(TAG, "open_app_a11y_fail", e.message ?: "")
+            }
+            fg = waitForForegroundPackage(targetPackage, timeoutMs = 3_500L)
+            if (isLaunchSuccess(targetPackage, fg)) return fg
+        }
+
+        startViaTrampoline(launchIntent)
+        fg = waitForForegroundPackage(targetPackage, timeoutMs = 4_500L)
+        if (isLaunchSuccess(targetPackage, fg)) return fg
+
+        tryShellLaunch(targetPackage, activityClass)
+        return waitForForegroundPackage(targetPackage, timeoutMs = 5_000L)
+    }
+
+    private fun startViaAppContext(launchIntent: Intent, stage: String) {
+        runCatching {
+            context.startActivity(Intent(launchIntent).apply { addLaunchFlags() })
+            ClawLog.bp(TAG, "open_app_ctx", "stage=$stage action=${launchIntent.action}")
+        }.onFailure { e ->
+            ClawLog.w(TAG, "open_app_ctx_fail", "stage=$stage ${e.message}")
+        }
+    }
+
+    private fun startViaTrampoline(launchIntent: Intent) {
+        runCatching {
+            context.startActivity(LaunchTrampolineActivity.build(context, launchIntent))
+            ClawLog.bp(TAG, "open_app_trampoline", "action=${launchIntent.action}")
+        }.onFailure { e ->
+            ClawLog.w(TAG, "open_app_trampoline_fail", e.message ?: "")
+        }
+    }
+
+    private fun Intent.addLaunchFlags() {
+        addFlags(
+            Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED or
+                Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                Intent.FLAG_ACTIVITY_SINGLE_TOP,
+        )
     }
 
     private fun waitForForegroundPackage(targetPackage: String, timeoutMs: Long): String {
@@ -107,26 +179,45 @@ class AppController(
         return !ForegroundProbe.isLauncherShell(fg)
     }
 
-    private fun startInForeground(launchIntent: Intent) {
-        context.startActivity(LaunchTrampolineActivity.build(context, launchIntent))
-    }
-
     private fun tryShellLaunch(packageName: String, activityClass: String?): Boolean {
         val shell = shellController ?: return false
-        val cmd = when {
-            packageName.equals("com.android.settings", ignoreCase = true) ->
-                "am start -a android.settings.SETTINGS"
-            !activityClass.isNullOrBlank() ->
-                "am start -n $packageName/$activityClass"
+        for (cmd in buildShellLaunchCommands(packageName, activityClass)) {
+            val r = shell.runRaw(cmd)
+            ClawLog.bp(
+                TAG,
+                "open_app_shell_fallback",
+                "cmd=$cmd ok=${r.success} err=${r.stderr.take(100)}",
+            )
+            if (r.success) return true
+        }
+        return false
+    }
+
+    private fun buildShellLaunchCommands(packageName: String, activityClass: String?): List<String> {
+        val cmds = mutableListOf<String>()
+        when {
+            packageName.equals("com.android.settings", ignoreCase = true) -> {
+                cmds += "am start -a android.settings.SETTINGS"
+                cmds += "cmd activity start-activity -a android.settings.SETTINGS"
+            }
             else -> {
-                val launch = context.packageManager.getLaunchIntentForPackage(packageName) ?: return false
-                val comp = launch.component ?: return false
-                "am start -n ${comp.packageName}/${comp.className}"
+                val comp = resolveComponent(packageName, activityClass) ?: return listOf(
+                    "monkey -p $packageName -c android.intent.category.LAUNCHER 1",
+                )
+                val flat = "${comp.first}/${comp.second}"
+                cmds += "am start -n $flat"
+                cmds += "cmd activity start-activity -n $flat"
+                cmds += "monkey -p $packageName -c android.intent.category.LAUNCHER 1"
             }
         }
-        val r = shell.runRaw(cmd)
-        ClawLog.bp(TAG, "open_app_shell_fallback", "cmd=$cmd ok=${r.success}")
-        return r.success
+        return cmds
+    }
+
+    private fun resolveComponent(packageName: String, activityClass: String?): Pair<String, String>? {
+        if (!activityClass.isNullOrBlank()) return packageName to activityClass
+        val launch = context.packageManager.getLaunchIntentForPackage(packageName) ?: return null
+        val comp = launch.component ?: return null
+        return comp.packageName to comp.className
     }
 
     private fun readForegroundPackage(): String =
@@ -159,41 +250,6 @@ class AppController(
         if (packageName.isBlank()) return Result(false, "CLEAR_APP_CACHE requires package")
         killApp(packageName)
         return openAppDetails(packageName)
-    }
-
-    fun openAppDetails(packageName: String): Result {
-        if (packageName.isBlank()) return Result(false, "package required")
-        if (!isPackageInstalled(packageName)) {
-            return Result(false, "package not installed: $packageName")
-        }
-        return try {
-            val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                data = android.net.Uri.parse("package:$packageName")
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            startInForeground(intent)
-            ClawLog.bp(TAG, "open_app_details", "pkg=$packageName")
-            val deadline = System.currentTimeMillis() + 5_000L
-            var fg = ""
-            while (System.currentTimeMillis() < deadline) {
-                fg = readForegroundPackage()
-                if (fg.isNotBlank() && (ForegroundProbe.isSettingsLike(fg) || !ForegroundProbe.isLauncherShell(fg))) {
-                    break
-                }
-                Thread.sleep(250L)
-            }
-            if (!isLaunchSuccess("com.android.settings", fg)) {
-                shellController?.runRaw(
-                    "am start -a android.settings.APPLICATION_DETAILS_SETTINGS -d package:$packageName",
-                )
-                fg = waitForForegroundPackage("com.android.settings", timeoutMs = 4_000L)
-            }
-            val ok = isLaunchSuccess("com.android.settings", fg)
-            Result(ok, fg.ifBlank { "foreground unavailable after open details" })
-        } catch (e: Exception) {
-            ClawLog.e(TAG, "open_app_details_fail", "pkg=$packageName", e)
-            Result(false, e.message ?: "open app details failed")
-        }
     }
 
     private fun buildLaunchIntent(packageName: String, activityClass: String?): Intent? {
