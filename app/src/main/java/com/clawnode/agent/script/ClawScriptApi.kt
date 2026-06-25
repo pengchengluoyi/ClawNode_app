@@ -59,6 +59,12 @@ class ClawScriptApi(
         return r.success
     }
 
+    fun openSystemSettings(): Boolean {
+        val r = appController.openSystemSettings()
+        if (r.success) onUiMutation()
+        return r.success
+    }
+
     fun openAppDetails(packageName: String): Boolean {
         val r = appController.openAppDetails(packageName.trim())
         if (r.success) onUiMutation()

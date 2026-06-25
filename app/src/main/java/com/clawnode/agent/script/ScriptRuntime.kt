@@ -76,7 +76,13 @@ class ScriptRuntime(
                     if (out.isNotBlank()) appendLine(out)
                     append("fg=").append(fg)
                 }.trim()
-                Result(true, "js ok", combined)
+                val launcherStuck = ForegroundProbe.isLauncherShell(fg) &&
+                    combined.contains("failed", ignoreCase = true)
+                if (launcherStuck) {
+                    Result(false, "js failed: still on launcher ($fg)", combined)
+                } else {
+                    Result(true, "js ok", combined)
+                }
             } catch (e: Exception) {
                 Result(false, "js error: ${e.message}", "")
             } finally {
@@ -130,7 +136,11 @@ class ScriptRuntime(
         "open_app", "launch_app" -> {
             val pkg = str(step, "package", str(step, "pkg", ""))
             val ok = api.openApp(pkg, step.get("activity")?.asString)
-            StepResult(ok, "pkg=$pkg")
+            StepResult(ok, "pkg=$pkg fg=${api.foreground()}")
+        }
+        "open_settings", "settings" -> {
+            val ok = api.openSystemSettings()
+            StepResult(ok, "fg=${api.foreground()}")
         }
         "open_app_details", "app_details", "open_app_settings" -> {
             val pkg = str(step, "package", str(step, "pkg", ""))

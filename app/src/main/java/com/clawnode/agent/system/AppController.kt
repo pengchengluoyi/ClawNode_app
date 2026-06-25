@@ -21,14 +21,26 @@ class AppController(
     /** 启动前点亮屏幕（由 ActionExecutorService 注入）。 */
     var onWakeUp: (() -> Unit)? = null
 
-    fun launchApp(packageName: String, activityClass: String? = null): Result {
+    fun launchApp(packageName: String, activityClass: String? = null): Result =
+        launchIntent(packageName, activityClass) { pkg, cls -> buildLaunchIntent(pkg, cls) }
+
+    fun openSystemSettings(): Result =
+        launchIntent("com.android.settings", null) {
+            _, _ -> Intent(android.provider.Settings.ACTION_SETTINGS)
+        }
+
+    private fun launchIntent(
+        packageName: String,
+        activityClass: String?,
+        intentBuilder: (String, String?) -> Intent?,
+    ): Result {
         if (packageName.isBlank()) {
             return Result(false, "OPEN_APP requires package")
         }
 
         return try {
             var resolvedPackage = packageName
-            var intent = buildLaunchIntent(packageName, activityClass)
+            var intent = intentBuilder(packageName, activityClass)
 
             if (intent == null) {
                 val lower = packageName.lowercase()
@@ -38,7 +50,7 @@ class AppController(
                 }
                 if (match != null) {
                     resolvedPackage = match.packageName
-                    intent = buildLaunchIntent(match.packageName, null)
+                    intent = intentBuilder(match.packageName, null)
                     ClawLog.bp(TAG, "open_app_fallback_by_label", "input=$packageName matched=${match.packageName}")
                 }
             }
@@ -92,33 +104,46 @@ class AppController(
         Thread.sleep(650L)
     }
 
-    /** 与 EXEC_SCRIPT JS 的 context.startActivity 相同路径，再跳板 / shell 兜底。 */
+    /** 无障碍在后台时优先跳板 Activity（MIUI 会静默丢弃 applicationContext.startActivity）。 */
     private fun tryLaunchSequence(
         targetPackage: String,
         launchIntent: Intent,
         activityClass: String?,
     ): String {
-        startViaAppContext(launchIntent, "primary")
-        var fg = waitForForegroundPackage(targetPackage, timeoutMs = 4_500L)
-        if (isLaunchSuccess(targetPackage, fg)) return fg
+        val fromBackground = accessibilityService != null
+        val attempts: List<() -> Unit> = if (fromBackground) {
+            listOf(
+                { startViaTrampoline(launchIntent) },
+                { startViaAppContext(launchIntent, "ctx") },
+                { startViaAccessibility(launchIntent) },
+            )
+        } else {
+            listOf(
+                { startViaAppContext(launchIntent, "ctx") },
+                { startViaTrampoline(launchIntent) },
+                { startViaAccessibility(launchIntent) },
+            )
+        }
 
-        accessibilityService?.let { svc ->
-            runCatching {
-                svc.startActivity(Intent(launchIntent).apply { addLaunchFlags() })
-                ClawLog.bp(TAG, "open_app_a11y", "pkg=$targetPackage")
-            }.onFailure { e ->
-                ClawLog.w(TAG, "open_app_a11y_fail", e.message ?: "")
-            }
-            fg = waitForForegroundPackage(targetPackage, timeoutMs = 3_500L)
+        for ((index, start) in attempts.withIndex()) {
+            start()
+            val waitMs = if (index == 0 && fromBackground) 5_500L else 4_000L
+            val fg = waitForForegroundPackage(targetPackage, timeoutMs = waitMs)
             if (isLaunchSuccess(targetPackage, fg)) return fg
         }
 
-        startViaTrampoline(launchIntent)
-        fg = waitForForegroundPackage(targetPackage, timeoutMs = 4_500L)
-        if (isLaunchSuccess(targetPackage, fg)) return fg
-
         tryShellLaunch(targetPackage, activityClass)
-        return waitForForegroundPackage(targetPackage, timeoutMs = 5_000L)
+        return waitForForegroundPackage(targetPackage, timeoutMs = 5_500L)
+    }
+
+    private fun startViaAccessibility(launchIntent: Intent) {
+        val svc = accessibilityService ?: return
+        runCatching {
+            svc.startActivity(Intent(launchIntent).apply { addLaunchFlags() })
+            ClawLog.bp(TAG, "open_app_a11y", "action=${launchIntent.action}")
+        }.onFailure { e ->
+            ClawLog.w(TAG, "open_app_a11y_fail", e.message ?: "")
+        }
     }
 
     private fun startViaAppContext(launchIntent: Intent, stage: String) {

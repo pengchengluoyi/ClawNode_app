@@ -5,69 +5,58 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
 import android.os.PowerManager
-import android.view.WindowManager
 import com.clawnode.agent.core.ClawLog
 
 /**
  * 前台跳板：在 Activity 上下文里 startActivity，绕过 MIUI 等对后台启动的限制。
- * 同时承担点亮/解锁屏幕（与 WakeUpActivity 相同逻辑）。
- *
- * 除 Parcelable Intent 外，还用 pkg/cls/action/data 字符串重建，避免 Parcel 丢 component。
  */
 class LaunchTrampolineActivity : Activity() {
 
+    private var wakeLock: PowerManager.WakeLock? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
-            setShowWhenLocked(true)
-            setTurnScreenOn(true)
-        } else {
-            @Suppress("DEPRECATION")
-            window.addFlags(
-                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
-                    WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
-                    WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
-            )
-        }
+        ScreenWakeHelper.prepareWindow(this)
 
         val pm = getSystemService(POWER_SERVICE) as PowerManager
         @Suppress("DEPRECATION")
-        val wakeLock = pm.newWakeLock(
+        wakeLock = pm.newWakeLock(
             PowerManager.FULL_WAKE_LOCK or
                 PowerManager.ACQUIRE_CAUSES_WAKEUP or
                 PowerManager.ON_AFTER_RELEASE,
             "ClawNode:launch",
         )
-        runCatching { wakeLock.acquire(WAKE_HOLD_MS) }
+        runCatching { wakeLock?.acquire(WAKE_HOLD_MS) }
 
         val launch = resolveLaunchIntent()
-        if (launch != null) {
-            runCatching {
-                launch.addFlags(
-                    Intent.FLAG_ACTIVITY_NEW_TASK or
-                        Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED,
-                )
-                startActivity(launch)
-                ClawLog.bp(
-                    TAG,
-                    "launch_ok",
-                    "action=${launch.action} cmp=${launch.component?.flattenToShortString()}",
-                )
-            }.onFailure { e ->
-                ClawLog.e(TAG, "launch_fail", launch.toString(), e)
+        ScreenWakeHelper.whenUnlocked(this) {
+            performLaunch(launch)
+            ScreenWakeHelper.scheduleFinish(this, WAKE_HOLD_MS) {
+                runCatching { if (wakeLock?.isHeld == true) wakeLock?.release() }
             }
-        } else {
-            ClawLog.w(TAG, "launch_missing", "could not rebuild launch intent")
         }
+    }
 
-        Handler(Looper.getMainLooper()).postDelayed({
-            runCatching { if (wakeLock.isHeld) wakeLock.release() }
-            finish()
-        }, WAKE_HOLD_MS)
+    private fun performLaunch(launch: Intent?) {
+        if (launch == null) {
+            ClawLog.w(TAG, "launch_missing", "could not rebuild launch intent")
+            return
+        }
+        runCatching {
+            launch.addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED,
+            )
+            startActivity(launch)
+            ClawLog.bp(
+                TAG,
+                "launch_ok",
+                "action=${launch.action} cmp=${launch.component?.flattenToShortString()}",
+            )
+        }.onFailure { e ->
+            ClawLog.e(TAG, "launch_fail", launch.toString(), e)
+        }
     }
 
     private fun resolveLaunchIntent(): Intent? {
@@ -107,7 +96,7 @@ class LaunchTrampolineActivity : Activity() {
         const val EXTRA_ACTION = "launch_action"
         const val EXTRA_DATA = "launch_data"
         private const val TAG = "LaunchTrampoline"
-        private const val WAKE_HOLD_MS = 3_500L
+        private const val WAKE_HOLD_MS = 4_000L
 
         fun build(context: android.content.Context, launchIntent: Intent): Intent =
             Intent(context, LaunchTrampolineActivity::class.java).apply {
