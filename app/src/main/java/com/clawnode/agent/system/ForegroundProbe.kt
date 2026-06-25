@@ -18,8 +18,10 @@ object ForegroundProbe {
     fun readFromDumpsys(shell: ShellController?): String {
         if (shell == null) return ""
         val cmds = listOf(
+            "dumpsys activity activities | grep -E 'topResumedActivity|mResumedActivity|ResumedActivity'",
             "dumpsys activity activities | grep mResumedActivity",
-            "dumpsys window | grep -E 'mCurrentFocus|mFocusedApp'",
+            "dumpsys window | grep -E 'mCurrentFocus|mFocusedApp|focusedApp'",
+            "dumpsys window windows | grep -E 'mCurrentFocus|mFocusedApp'",
         )
         for (cmd in cmds) {
             val out = shell.runRaw(cmd).stdout
@@ -28,11 +30,22 @@ object ForegroundProbe {
         return ""
     }
 
-    private fun parsePackage(line: String): String? {
-        if (line.isBlank()) return null
+    private fun parsePackage(text: String): String? {
+        if (text.isBlank()) return null
+        for (line in text.lineSequence()) {
+            parsePackageFromLine(line)?.let { return it }
+        }
+        return null
+    }
+
+    private fun parsePackageFromLine(line: String): String? {
         // u0 com.foo/.MainActivity 或 u0 com.foo/com.foo.Main
         Regex("""u\d+\s+([a-zA-Z0-9_.]+)/""").find(line)?.groupValues?.getOrNull(1)?.let {
             if (it.isNotBlank()) return it.trim()
+        }
+        // ActivityRecord{... com.foo/.Bar ...}
+        Regex("""\s([a-zA-Z][a-zA-Z0-9_.]*)/[a-zA-Z0-9_.$]+""").find(line)?.groupValues?.getOrNull(1)?.let {
+            if (it.isNotBlank() && it != "android") return it.trim()
         }
         Regex("""package=([a-zA-Z0-9_.]+)""").find(line)?.groupValues?.getOrNull(1)?.let {
             if (it.isNotBlank()) return it.trim()

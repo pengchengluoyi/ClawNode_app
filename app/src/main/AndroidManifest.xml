@@ -58,6 +58,14 @@
             android:noHistory="true"
             android:theme="@style/Theme.Transparent" />
 
+        <!-- 前台跳板：MIUI 等禁止后台 startActivity 时由此 Activity 代为启动 -->
+        <activity
+            android:name=".system.LaunchTrampolineActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@style/Theme.Transparent" />
+
         <!-- 申请 MediaProjection 授权的透明 Activity -->
         <activity
             android:name=".system.MediaProjectionRequestActivity"
