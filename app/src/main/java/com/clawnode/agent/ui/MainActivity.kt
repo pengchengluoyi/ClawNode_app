@@ -61,6 +61,7 @@ class MainActivity : AppCompatActivity() {
         observeConnectionState()
         requestNotificationPermissionIfNeeded()
         promptInstallPermissionIfNeeded()
+        promptOverlayPermissionIfNeeded()
         promptBackgroundProtectionIfNeeded()
     }
 
@@ -263,6 +264,38 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
+     * 悬浮窗权限引导（解决“打开应用 / 设置页失败”）。
+     *
+     * 悬浮窗（显示在其他应用上层）是 Android 10+/HyperOS 对后台启动 Activity（BAL）的
+     * 核心豁免开关。未授予时，后台拉起任何应用都会被系统静默拦截、前台回落到桌面。
+     * 未授予时弹窗引导用户开启；小米还需在「权限管理」里额外开「后台弹出界面」。
+     */
+    private fun promptOverlayPermissionIfNeeded() {
+        if (SystemController.canDrawOverlays(this)) return
+        promptOverlayPermissionDialog()
+    }
+
+    private fun promptOverlayPermissionDialog() {
+        AlertDialog.Builder(this)
+            .setTitle("开启悬浮窗（远程打开应用必做）")
+            .setMessage(
+                "远程指令需要从后台拉起其他应用 / 设置页。Android 10+ 和小米 HyperOS " +
+                    "默认禁止后台启动界面，必须授予「显示在其他应用上层 / 悬浮窗」才能放行，" +
+                    "否则打开应用会失败、画面停在桌面。\n\n" +
+                    "① 悬浮窗：开启「允许显示在其他应用上层」；\n" +
+                    "② 小米还需在「权限管理」里额外开启「后台弹出界面」「锁屏显示」。"
+            )
+            .setPositiveButton("①开启悬浮窗") { _, _ ->
+                SystemController.requestOverlayPermission(this)
+            }
+            .setNeutralButton("②小米权限管理") { _, _ ->
+                SystemController.openMiuiPermissionEditor(this)
+            }
+            .setNegativeButton("稍后", null)
+            .show()
+    }
+
+    /**
      * 后台保活引导（解决熄屏挂机掉线）。
      *
      * Doze 深度休眠会切断后台应用网络，国产 ROM 还会冻结进程。仅靠前台服务 +
@@ -342,6 +375,16 @@ class MainActivity : AppCompatActivity() {
         binding.tvBatteryState.text =
             if (SystemController.isBatteryOptimizationIgnored(this)) "🟢 电池优化：已忽略（推荐）"
             else "🔴 电池优化：未忽略（后台可能被杀死）"
+
+        binding.tvCaptureState.text = binding.tvCaptureState.text.toString() + "\n" + (
+            if (SystemController.canDrawOverlays(this)) "🟢 悬浮窗：已授予（可后台打开应用）"
+            else "🔴 悬浮窗：未授予（远程打开应用会失败，点此修复）"
+        )
+        if (!SystemController.canDrawOverlays(this)) {
+            binding.tvCaptureState.setOnClickListener { promptOverlayPermissionDialog() }
+        } else {
+            binding.tvCaptureState.setOnClickListener(null)
+        }
 
         binding.btnInstallPerm.visibility =
             if (AppUpdateManager.canInstallPackages(this)) View.GONE else View.VISIBLE

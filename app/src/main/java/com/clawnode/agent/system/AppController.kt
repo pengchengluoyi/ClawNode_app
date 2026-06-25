@@ -60,6 +60,8 @@ class AppController(
             }
 
             prepareWake()
+            val overlayOk = runCatching { Settings.canDrawOverlays(context) }.getOrDefault(false)
+            ClawLog.bp(TAG, "open_app_overlay", "granted=$overlayOk (false=后台启动会被拦截)")
             val launchIntent = Intent(intent).apply { addLaunchFlags() }
 
             var fg = tryLaunchSequence(resolvedPackage, launchIntent, activityClass)

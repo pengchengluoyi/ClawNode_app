@@ -96,6 +96,70 @@ object SystemController {
         )
     }
 
+    /**
+     * 悬浮窗（显示在其他应用上层）是否已授予。
+     *
+     * 这是后台启动 Activity（BAL）的关键豁免：未授予时，后台 service 调
+     * startActivity（含跳板 Activity）被系统静默拦截，OPEN_APP / 打开设置页全部失败，
+     * 前台回落到桌面（com.miui.home）。授予后即可从后台拉起目标应用。
+     */
+    fun canDrawOverlays(context: Context): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return true
+        return runCatching { Settings.canDrawOverlays(context) }
+            .getOrElse {
+                ClawLog.w(TAG, "overlay_check_fail", it.message ?: "")
+                false
+            }
+    }
+
+    /** 跳转系统「显示在其他应用上层 / 悬浮窗」授权页。 */
+    fun requestOverlayPermission(context: Context) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+        ClawLog.bp(TAG, "request_overlay", context.packageName)
+        runCatching {
+            context.startActivity(
+                Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION)
+                    .setData(Uri.parse("package:${context.packageName}"))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+        }.onFailure {
+            // 部分 ROM 不支持带包名的直达页，退回到不带 data 的总开关列表
+            ClawLog.w(TAG, "request_overlay_fallback", it.message ?: "")
+            runCatching {
+                context.startActivity(
+                    Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+            }.onFailure { openAppDetailsSettings(context) }
+        }
+    }
+
+    /**
+     * 小米 / HyperOS 专属：跳转「权限管理」编辑页，用户可在此开启
+     * 「后台弹出界面」「显示悬浮窗」「锁屏显示」等 —— 后台拉起应用的另一关键开关。
+     * 非小米或跳转失败时回退到应用详情页。
+     */
+    fun openMiuiPermissionEditor(context: Context) {
+        val ok = runCatching {
+            context.startActivity(
+                Intent("miui.intent.action.APP_PERM_EDITOR")
+                    .setClassName(
+                        "com.miui.securitycenter",
+                        "com.miui.permcenter.permissions.PermissionsEditorActivity",
+                    )
+                    .putExtra("extra_pkgname", context.packageName)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+            true
+        }.getOrDefault(false)
+        if (ok) {
+            ClawLog.bp(TAG, "open_miui_perm_editor", context.packageName)
+        } else {
+            ClawLog.bp(TAG, "open_miui_perm_editor", "fallback=app_details")
+            openAppDetailsSettings(context)
+        }
+    }
+
     fun isBatteryOptimizationIgnored(context: Context): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return true
         return runCatching {

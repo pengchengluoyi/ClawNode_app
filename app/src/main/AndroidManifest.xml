@@ -6,6 +6,13 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!--
+      悬浮窗权限：Android 10+ / HyperOS 对“后台启动 Activity”(BAL) 的核心豁免开关。
+      未授予时，后台 service 调 startActivity（含跳板 Activity）会被系统静默丢弃，
+      前台始终回落到 com.miui.home —— 这正是 OPEN_APP / 打开设置页失败的根因。
+      授予后即可从后台拉起目标应用。需用户在“显示在其他应用上层/悬浮窗”里手动开启。
+    -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <!-- MediaProjection 推流/后台截图前台服务类型（Android 14 强制要求） -->
