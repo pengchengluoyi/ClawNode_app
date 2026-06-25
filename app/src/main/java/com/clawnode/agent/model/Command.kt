@@ -57,7 +57,7 @@ data class Command(
         @SerializedName("url") val url: String? = null,
         /** INSTALL_APK：可选文件名 */
         @SerializedName("file_name") val fileName: String? = null,
-        /** SET_CLIPBOARD：要设置的文本 */
+        /** SET_CLIPBOARD / INPUT_TEXT：文本内容 */
         @SerializedName("text") val text: String? = null,
         /** 当 command == "control" 时，子动作如 "tap"、"swipe" */
         @SerializedName("action") val action: String? = null
@@ -84,6 +84,7 @@ data class Command(
         const val RUN_SHELL = "RUN_SHELL"
         const val INSTALL_APK = "INSTALL_APK"
         const val SET_CLIPBOARD = "SET_CLIPBOARD"
+        const val INPUT_TEXT = "INPUT_TEXT"
         const val CONTROL = "CONTROL"
         const val GET_INSTALLED_APPS = "GET_INSTALLED_APPS"
     }

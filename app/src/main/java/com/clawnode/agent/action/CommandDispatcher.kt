@@ -28,6 +28,7 @@ class CommandDispatcher(
     private val onRunShell: (String) -> Triple<Boolean, String, String>,
     private val onInstallApk: suspend (traceId: String, url: String, fileName: String?) -> Pair<Boolean, String>,
     private val onSetClipboard: (String) -> Pair<Boolean, String>,
+    private val onInputText: (String, Int?, Int?) -> Pair<Boolean, String>,
     private val onGetInstalledApps: () -> List<com.clawnode.agent.system.AppController.InstalledApp>,
 ) {
 
@@ -71,6 +72,7 @@ class CommandDispatcher(
             Command.RUN_SHELL, "RUN_SHELL", "SHELL" -> handleRunShell(cmd)
             Command.INSTALL_APK, "INSTALL_APK", "INSTALLAPK" -> handleInstallApk(cmd)
             Command.SET_CLIPBOARD, "SET_CLIPBOARD", "CLIPBOARD" -> handleSetClipboard(cmd)
+            Command.INPUT_TEXT, "INPUT_TEXT" -> handleInputText(cmd)
             Command.GET_INSTALLED_APPS, "GET_INSTALLED_APPS" -> handleGetInstalledApps(cmd)
             else -> ws.sendChecked(
                 NodeResponse.actionResult(cmd.safeTraceId, false, "unknown command=${cmd.command} (effective=$key)")
@@ -162,6 +164,25 @@ class CommandDispatcher(
             ws.sendChecked(NodeResponse.installProgress(cmd.safeTraceId, NodeResponse.STAGE_FAILED, message = e.message))
             false to (e.message ?: "install error")
         }
+        ws.sendChecked(NodeResponse.actionResult(cmd.safeTraceId, ok, msg))
+    }
+
+    private suspend fun handleInputText(cmd: Command) {
+        val text = cmd.params?.text
+        if (text.isNullOrEmpty()) {
+            ws.sendChecked(NodeResponse.actionResult(cmd.safeTraceId, false, "INPUT_TEXT requires text"))
+            return
+        }
+        val x = cmd.params?.x
+        val y = cmd.params?.y
+        if (x != null && y != null) {
+            gesture.tap(x.toFloat(), y.toFloat(), cmd.params?.durationMs ?: GestureController.DEFAULT_TAP_MS)
+            kotlinx.coroutines.delay(250)
+        }
+        val (ok, msg) = runCatching { onInputText(text, x, y) }.getOrElse {
+            false to (it.message ?: "input text error")
+        }
+        ClawLog.bp(TAG, "input_text_done", "trace=${cmd.safeTraceId} ok=$ok len=${text.length}")
         ws.sendChecked(NodeResponse.actionResult(cmd.safeTraceId, ok, msg))
     }
 

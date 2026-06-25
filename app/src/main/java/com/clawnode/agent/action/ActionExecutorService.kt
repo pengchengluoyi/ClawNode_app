@@ -19,7 +19,7 @@ import com.clawnode.agent.service.NodeForegroundService
 import com.clawnode.agent.pairing.PairingBridge
 import com.clawnode.agent.pairing.PairingHttpServer
 import com.clawnode.agent.system.AppController
-import com.clawnode.agent.system.ClipboardController
+import com.clawnode.agent.system.TextInputController
 import com.clawnode.agent.system.ShellController
 import com.clawnode.agent.update.AppUpdateManager
 import com.clawnode.agent.model.NodeResponse
@@ -57,6 +57,7 @@ class ActionExecutorService : AccessibilityService() {
     private lateinit var appController: AppController
     private lateinit var shellController: ShellController
     private lateinit var clipboardController: ClipboardController
+    private lateinit var textInputController: TextInputController
     private var screenWakeReceiver: BroadcastReceiver? = null
     private var networkMonitor: NetworkMonitor? = null
     @Volatile
@@ -84,6 +85,7 @@ class ActionExecutorService : AccessibilityService() {
         appController = AppController(applicationContext, this)
         shellController = ShellController(applicationContext)
         clipboardController = ClipboardController(applicationContext)
+        textInputController = TextInputController(this, clipboardController)
         val configManager = ConfigManager.get(applicationContext)
         wsManager = WsManager(
             scope,
@@ -193,6 +195,9 @@ class ActionExecutorService : AccessibilityService() {
             onSetClipboard = { text ->
                 clipboardController.setText(text).let { it.success to it.message }
             },
+            onInputText = { text, x, y ->
+                textInputController.inputText(text, x, y).let { it.success to it.message }
+            },
             onGetInstalledApps = {
                 appController.listLaunchableApps()
             },
@@ -267,6 +272,15 @@ class ActionExecutorService : AccessibilityService() {
             "home", "3" -> GLOBAL_ACTION_HOME
             "recents", "recent", "187" -> GLOBAL_ACTION_RECENTS
             "notifications" -> GLOBAL_ACTION_NOTIFICATIONS
+            "paste" -> {
+                val ok = if (::textInputController.isInitialized) {
+                    textInputController.pasteFocused().success
+                } else {
+                    false
+                }
+                ClawLog.bp(TAG, "key_event", "key=paste ok=$ok")
+                return ok
+            }
             else -> return false
         }
         val ok = performGlobalAction(action)
