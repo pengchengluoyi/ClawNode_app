@@ -215,16 +215,17 @@ class MainActivity : AppCompatActivity() {
             binding.btnDiscover.text = "鉴权中…"
             try {
                 val nodeSn = config.settings.first().nodeSn
+                val wsUrl = ServerDiscovery.resolveReachableWsUrl(gateway, token, nodeSn)
                 when (
                     val probe = GatewayProbe.probe(
-                        wsUrl = gateway.wsUrl,
+                        wsUrl = wsUrl,
                         token = token,
                         nodeSn = nodeSn
                     )
                 ) {
                     is GatewayProbe.ProbeResult.Accepted -> {
-                        binding.etWsUrl.setText(gateway.wsUrl)
-                        config.savePairing(gateway.wsUrl, token, gateway.instanceId)
+                        binding.etWsUrl.setText(wsUrl)
+                        config.savePairing(wsUrl, token, gateway.instanceId)
                         toast("已配对：${gateway.displayName}")
                     }
                     is GatewayProbe.ProbeResult.AuthRejected -> {

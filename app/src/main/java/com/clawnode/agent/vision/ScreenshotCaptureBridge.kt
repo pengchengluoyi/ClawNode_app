@@ -29,6 +29,15 @@ object ScreenshotCaptureBridge {
             )
         }
 
+        synchronized(lock) {
+            if (pending != null && !pending!!.isCompleted) {
+                ClawLog.w(TAG, "capture_busy", "trace=$traceId another projection capture in flight")
+                return Result.failure(
+                    IllegalStateException("screenshot projection capture already in progress")
+                )
+            }
+        }
+
         val deferred = CompletableDeferred<Result<Bitmap>>()
         synchronized(lock) {
             pending?.cancel(CancellationException("superseded by trace=$traceId"))

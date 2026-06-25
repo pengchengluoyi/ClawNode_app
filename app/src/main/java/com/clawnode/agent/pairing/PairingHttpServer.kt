@@ -96,9 +96,14 @@ object PairingHttpServer {
                 return
             }
 
-            ClawLog.bp(TAG, "pair_push_rx", "remote=$remote gateway=$gatewayId url=$wsUrl")
+            val effectiveWsUrl = com.clawnode.agent.discovery.GatewayAddress.preferLanRemoteWsUrl(wsUrl, remote)
+            if (effectiveWsUrl != wsUrl) {
+                ClawLog.bp(TAG, "pair_push_lan_rewrite", "remote=$remote from=$wsUrl to=$effectiveWsUrl")
+            }
+
+            ClawLog.bp(TAG, "pair_push_rx", "remote=$remote gateway=$gatewayId url=$effectiveWsUrl")
             val handler = PairingBridge.onPairPush
-            val ok = handler?.invoke(PairingBridge.PairPayload(wsUrl, token, gatewayId)) == true
+            val ok = handler?.invoke(PairingBridge.PairPayload(effectiveWsUrl, token, gatewayId)) == true
             if (ok) {
                 writeResponse(writer, 200, """{"ok":true,"msg":"pair accepted"}""")
                 ClawLog.bp(TAG, "pair_push_ok", "remote=$remote")

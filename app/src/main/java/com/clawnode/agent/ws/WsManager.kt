@@ -104,6 +104,10 @@ class WsManager(
     @Volatile
     private var unpairedHalt = false
 
+    /** Wi-Fi / 默认网络切换后，下次连接前强制 mDNS 刷新地址。 */
+    @Volatile
+    private var forceDiscoveryRefresh = false
+
     fun applySettings(newSettings: NodeSettings) {
         val old = settings
         settings = newSettings
@@ -203,6 +207,7 @@ class WsManager(
             return
         }
         ClawLog.bp(TAG, "net_change", "force reconnect on network switch")
+        forceDiscoveryRefresh = true
         reconnectAttempt = 0
         restart()
     }
@@ -337,20 +342,30 @@ class WsManager(
         val current = settings
         val saved = current.wsUrl
 
-        // Pure auto mode (ws://auto or blank): always discover first to get a current address.
-        if (current.usesAutoDiscovery) {
-            val fresh = runDiscovery("auto_mode")
-            if (!fresh.isNullOrBlank()) return fresh
+        // 自动模式，或 Wi-Fi 切换后：先 mDNS 刷新，避免继续连旧网段 IP / overlay 地址。
+        if (current.usesAutoDiscovery || forceDiscoveryRefresh) {
+            val reason = if (current.usesAutoDiscovery) "auto_mode" else "net_change"
+            forceDiscoveryRefresh = false
+            val fresh = runDiscovery(reason)
+            if (!fresh.isNullOrBlank()) {
+                if (fresh != saved) {
+                    settings = settings.copy(wsUrl = fresh)
+                    onUrlDiscovered?.invoke(fresh)
+                }
+                return fresh
+            }
             return saved.takeIf { it.isNotBlank() }
         }
 
+        val savedHost = com.clawnode.agent.discovery.GatewayAddress.extractHostFromWsUrl(saved)
+        val savedHostStale = savedHost != null &&
+            !com.clawnode.agent.discovery.GatewayAddress.isPrivateLanIp(savedHost) &&
+            com.clawnode.agent.discovery.GatewayAddress.isOverlayOrCgnatIp(savedHost)
+
         val looksLikeNameBased = saved.contains(".local", ignoreCase = true)
 
-        // Concrete IP-based saved URL (the common happy path after pairing or previous successful discovery):
-        // use it directly for fast connect. We do NOT replace it eagerly with a discovery result.
-        // Refresh to a potentially new IP only happens on repeated failures (see connectLoop + tryAutoDiscovery)
-        // or explicit user "discover" action.
-        if ((saved.startsWith("ws://") || saved.startsWith("wss://")) && !looksLikeNameBased) {
+        // 已保存的私网 IP：直连；overlay / 不可达地址则先发现。
+        if ((saved.startsWith("ws://") || saved.startsWith("wss://")) && !looksLikeNameBased && !savedHostStale) {
             return saved
         }
 
@@ -696,13 +711,26 @@ class WsManager(
     }
 
     private suspend fun handlePairConfig(data: GatewayControl.Data?) {
-        val wsUrl = data?.wsUrl?.trim().orEmpty()
+        var wsUrl = data?.wsUrl?.trim().orEmpty()
         val authToken = data?.authToken?.trim().orEmpty()
         val gatewayId = data?.gatewayId?.trim().orEmpty()
         if (wsUrl.isBlank() || authToken.isBlank()) {
             ClawLog.w(TAG, "pair_config_invalid", "missing ws/token")
             return
         }
+
+        val pushedHost = com.clawnode.agent.discovery.GatewayAddress.extractHostFromWsUrl(wsUrl)
+        if (pushedHost != null && com.clawnode.agent.discovery.GatewayAddress.isOverlayOrCgnatIp(pushedHost)) {
+            val lanUrl = runDiscovery("pair_config_lan")
+            val lanHost = lanUrl?.let { com.clawnode.agent.discovery.GatewayAddress.extractHostFromWsUrl(it) }
+            if (!lanUrl.isNullOrBlank() && lanHost != null &&
+                com.clawnode.agent.discovery.GatewayAddress.isPrivateLanIp(lanHost)
+            ) {
+                ClawLog.bp(TAG, "pair_config_lan_prefer", "overlay=$wsUrl → $lanUrl")
+                wsUrl = lanUrl
+            }
+        }
+
         ClawLog.bp(TAG, "pair_config_rx", "gateway=$gatewayId url=$wsUrl")
         unpairedHalt = false
         manualClosed = false

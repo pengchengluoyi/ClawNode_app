@@ -104,14 +104,9 @@ object ServerDiscovery {
 
     private fun parseGateway(info: NsdServiceInfo, serviceType: String): Gateway? {
         val lanHost = info.attributes?.get("lanHost")?.toString(Charsets.UTF_8)?.takeIf { it.isNotBlank() }
-        // IMPORTANT: For the connect wsUrl we prefer the address that NSD just successfully resolved
-        // (info.host.hostAddress). This is a numeric LAN IP that is guaranteed to be reachable right now.
-        // We still record lanHost (the .local name) for display and potential future name-based reconnects.
-        // Relying on the .local hostname for immediate connect has proven unreliable on some Android devices
-        // (UnknownHostException even when mDNS service discovery itself succeeded).
         val resolvedIp = info.host?.hostAddress?.takeIf { it.isNotBlank() }
         val resolvedName = info.host?.hostName?.takeIf { it.isNotBlank() }
-        val reliableHost = resolvedIp ?: lanHost ?: resolvedName
+        val reliableHost = GatewayAddress.pickConnectHost(resolvedIp, lanHost, resolvedName)
         val port = if (info.port > 0) info.port else DEFAULT_PORT
         if (reliableHost.isNullOrBlank()) return null
 
@@ -133,6 +128,36 @@ object ServerDiscovery {
             displayName = displayName,
             lanHost = lanHost
         )
+    }
+
+    /**
+     * 在多个候选 ws URL 中挑选可连通的地址（overlay 不可达时尝试 lanHost 等）。
+     */
+    suspend fun resolveReachableWsUrl(
+        gateway: Gateway,
+        token: String,
+        nodeSn: String,
+    ): String {
+        val candidates = GatewayAddress.buildCandidateWsUrls(gateway)
+        if (candidates.size <= 1 || token.isBlank()) {
+            return candidates.firstOrNull() ?: gateway.wsUrl
+        }
+        for (url in candidates) {
+            when (val probe = GatewayProbe.probe(url, token, nodeSn)) {
+                is GatewayProbe.ProbeResult.Accepted -> {
+                    ClawLog.bp(TAG, "resolve_reachable", "picked=$url")
+                    return url
+                }
+                is GatewayProbe.ProbeResult.AuthRejected -> {
+                    ClawLog.w(TAG, "resolve_auth_reject", "url=$url")
+                    return url
+                }
+                is GatewayProbe.ProbeResult.Failed -> {
+                    ClawLog.bp(TAG, "resolve_probe_fail", "url=$url msg=${probe.message}")
+                }
+            }
+        }
+        return candidates.first()
     }
 
     private fun parseNode(info: NsdServiceInfo): LanNode? {

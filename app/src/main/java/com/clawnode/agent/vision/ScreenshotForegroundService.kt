@@ -94,7 +94,7 @@ class ScreenshotForegroundService : Service() {
             if (mp == null) {
                 val data = MediaProjectionHolder.resultData
                 val code = MediaProjectionHolder.resultCode
-                if (data == null) {
+                if (data == null || code == 0) {
                     failAndStop("no media projection authorization")
                     return
                 }
@@ -103,8 +103,6 @@ class ScreenshotForegroundService : Service() {
                     failAndStop("getMediaProjection returned null")
                     return
                 }
-                // Consume the one-time auth token into a reusable live projection instance.
-                // Clear the resultData so no future path tries to getMediaProjection with it again.
                 MediaProjectionHolder.projection = mp
                 MediaProjectionHolder.resultCode = 0
                 MediaProjectionHolder.resultData = null

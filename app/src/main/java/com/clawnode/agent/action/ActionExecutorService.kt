@@ -89,8 +89,15 @@ class ActionExecutorService : AccessibilityService() {
             scope,
             discoverServer = { pairedGatewayId ->
                 val gateways = com.clawnode.agent.discovery.ServerDiscovery.findGateways(applicationContext)
-                com.clawnode.agent.discovery.ServerDiscovery.matchPaired(gateways, pairedGatewayId)?.wsUrl
-                    ?: gateways.firstOrNull()?.wsUrl
+                val gateway = com.clawnode.agent.discovery.ServerDiscovery.matchPaired(gateways, pairedGatewayId)
+                    ?: gateways.firstOrNull()
+                    ?: return@WsManager null
+                val settings = configManager.settings.first()
+                com.clawnode.agent.discovery.ServerDiscovery.resolveReachableWsUrl(
+                    gateway,
+                    settings.authToken,
+                    settings.nodeSn,
+                )
             },
             onPairConfig = { wsUrl, authToken, gatewayId ->
                 configManager.savePairing(wsUrl, authToken, gatewayId)
@@ -382,7 +389,17 @@ class ActionExecutorService : AccessibilityService() {
         ClawLog.w(TAG, "onInterrupt", "accessibility interrupted")
     }
 
-    fun currentForegroundPackage(): String = foregroundPackageName.trim()
+    /** 优先读 [rootInActiveWindow] 实时包名，避免 a11y 事件缓存滞后（如 OPEN_APP 后仍报桌面）。 */
+    fun currentForegroundPackage(): String {
+        val active = runCatching {
+            rootInActiveWindow?.packageName?.toString()?.trim().orEmpty()
+        }.getOrDefault("")
+        if (active.isNotBlank()) {
+            foregroundPackageName = active
+            return active
+        }
+        return foregroundPackageName.trim()
+    }
 
     override fun onUnbind(intent: Intent?): Boolean {
         ClawLog.w(TAG, "onUnbind", "accessibility unbind")

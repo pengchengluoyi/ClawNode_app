@@ -8,8 +8,10 @@ import com.clawnode.agent.core.ClawLog
 import com.clawnode.agent.model.Command
 import com.clawnode.agent.model.NodeResponse
 import com.clawnode.agent.ws.WsManager
-import android.content.Intent
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /**
@@ -24,6 +26,17 @@ class VisionManager(
     private val ws: WsManager
 ) {
 
+    private val captureMutex = Mutex()
+
+    @Volatile
+    private var lastCaptureAtMs: Long = 0L
+
+    @Volatile
+    private var lastCaptureBase64: String? = null
+
+    @Volatile
+    private var lastCaptureQuality: Int = DEFAULT_QUALITY
+
     suspend fun captureSingleShot(cmd: Command) {
         val quality = (cmd.params?.quality ?: DEFAULT_QUALITY).coerceIn(1, 100)
         val traceId = cmd.safeTraceId
@@ -31,46 +44,76 @@ class VisionManager(
 
         ClawLog.bp(TAG, "screenshot_start", "trace=$traceId bg=$inBg quality=$quality")
 
-        val bitmapResult = resolveBitmap(traceId, inBg)
-        val bitmap = bitmapResult.getOrElse { err ->
-            ClawLog.w(TAG, "screenshot_fail", "trace=$traceId ${err.message}")
-            ws.sendChecked(
-                NodeResponse.actionResult(traceId, false, err.message ?: "screenshot failed")
-            )
-            return
-        }
-
-        val base64 = withContext(Dispatchers.IO) {
-            try {
-                ImageCodec.bitmapToJpegBase64(bitmap, quality)
-            } finally {
-                bitmap.recycle()
+        captureMutex.withLock {
+            val now = System.currentTimeMillis()
+            val cached = lastCaptureBase64
+            if (
+                cached != null &&
+                lastCaptureQuality == quality &&
+                now - lastCaptureAtMs < MIN_CAPTURE_INTERVAL_MS
+            ) {
+                ClawLog.bp(
+                    TAG, "screenshot_cache_hit",
+                    "trace=$traceId ageMs=${now - lastCaptureAtMs}"
+                )
+                ws.sendChecked(NodeResponse.screenshot(traceId, cached))
+                return
             }
-        }
 
-        val sent = ws.sendChecked(NodeResponse.screenshot(traceId, base64))
-        ClawLog.bp(TAG, "screenshot_done", "trace=$traceId sent=$sent base64Len=${base64.length}")
+            val sinceLast = now - lastCaptureAtMs
+            if (lastCaptureAtMs > 0L && sinceLast < MIN_CAPTURE_INTERVAL_MS) {
+                delay(MIN_CAPTURE_INTERVAL_MS - sinceLast)
+            }
+
+            val bitmapResult = resolveBitmap(traceId, inBg)
+            val bitmap = bitmapResult.getOrElse { err ->
+                ClawLog.w(TAG, "screenshot_fail", "trace=$traceId ${err.message}")
+                ws.sendChecked(
+                    NodeResponse.actionResult(traceId, false, err.message ?: "screenshot failed")
+                )
+                return
+            }
+
+            val base64 = withContext(Dispatchers.IO) {
+                try {
+                    ImageCodec.bitmapToJpegBase64(bitmap, quality)
+                } finally {
+                    bitmap.recycle()
+                }
+            }
+
+            lastCaptureBase64 = base64
+            lastCaptureAtMs = System.currentTimeMillis()
+            lastCaptureQuality = quality
+
+            val sent = ws.sendChecked(NodeResponse.screenshot(traceId, base64))
+            ClawLog.bp(TAG, "screenshot_done", "trace=$traceId sent=$sent base64Len=${base64.length}")
+        }
     }
 
     /**
      * 前台与后台均优先 takeScreenshot；仅失败时再降级 MediaProjection。
-     * 原先后台直接跳过 a11y 会导致未授权 MediaProjection 时无法截图。
+     * INTERVAL_TOO_SHORT / SECURE_WINDOW 不降级投影，避免 MIUI 上连发触发 token 复用崩溃。
      */
     private suspend fun resolveBitmap(traceId: String, inBg: Boolean): Result<Bitmap> {
-        val a11y = accessibilityService.captureScreenshotBitmap()
+        val a11y = captureWithA11yRetry(traceId)
         if (a11y.isSuccess) {
             ClawLog.bp(TAG, "screenshot_path", "trace=$traceId mode=takeScreenshot bg=$inBg")
             return a11y
         }
+
+        val errMsg = a11y.exceptionOrNull()?.message.orEmpty()
+        if (isIntervalTooShort(errMsg) || isSecureWindow(errMsg)) {
+            ClawLog.w(TAG, "screenshot_a11y_no_fallback", "trace=$traceId err=$errMsg")
+            return a11y
+        }
+
         ClawLog.w(
             TAG, "screenshot_a11y_fail",
-            "trace=$traceId bg=$inBg err=${a11y.exceptionOrNull()?.message} → fallback projection"
+            "trace=$traceId bg=$inBg err=$errMsg → fallback projection"
         )
 
         if (!MediaProjectionHolder.hasAuthorization()) {
-            // Do not auto-launch the system authorization dialog from automated command handling.
-            // This prevents surprise prompts during instruction execution (e.g. rapid GET_SCREENSHOT).
-            // User should (re)authorize explicitly via the app UI when background capture is needed.
             return Result.failure(
                 IllegalStateException(
                     "background screenshot requires screen capture authorization; open ClawNode app and tap 屏幕捕获授权"
@@ -81,12 +124,32 @@ class VisionManager(
         return ScreenshotCaptureBridge.captureOnce(context, traceId)
     }
 
+    private suspend fun captureWithA11yRetry(traceId: String): Result<Bitmap> {
+        var last = accessibilityService.captureScreenshotBitmap()
+        repeat(INTERVAL_MAX_RETRIES) { attempt ->
+            if (last.isSuccess) return last
+            val msg = last.exceptionOrNull()?.message.orEmpty()
+            if (!isIntervalTooShort(msg)) return last
+            ClawLog.bp(TAG, "screenshot_interval_retry", "trace=$traceId attempt=${attempt + 1}")
+            delay(INTERVAL_RETRY_DELAY_MS)
+            last = accessibilityService.captureScreenshotBitmap()
+        }
+        return last
+    }
+
+    private fun isIntervalTooShort(message: String): Boolean =
+        message.contains("INTERVAL_TOO_SHORT", ignoreCase = true) ||
+            (message.contains("interval", ignoreCase = true) && message.contains("short", ignoreCase = true))
+
+    private fun isSecureWindow(message: String): Boolean =
+        message.contains("SECURE_WINDOW", ignoreCase = true) ||
+            message.contains("secure window", ignoreCase = true)
+
     fun startStream(cmd: Command) {
         val fps = (cmd.params?.fps ?: DEFAULT_FPS).coerceIn(1, 30)
         ClawLog.bp(TAG, "stream_start", "trace=${cmd.safeTraceId} fps=$fps")
 
         if (!MediaProjectionHolder.hasAuthorization()) {
-            // Do not auto-show system dialog from command path. Fail so caller can surface a clear message.
             ws.sendChecked(NodeResponse.streamStatus(cmd.safeTraceId, false, "stream requires screen capture authorization; authorize in ClawNode app"))
             return
         }
@@ -104,6 +167,9 @@ class VisionManager(
         private const val TAG = "VisionManager"
         const val DEFAULT_QUALITY = 80
         const val DEFAULT_FPS = 15
+        private const val MIN_CAPTURE_INTERVAL_MS = 1_000L
+        private const val INTERVAL_RETRY_DELAY_MS = 900L
+        private const val INTERVAL_MAX_RETRIES = 2
     }
 
 }

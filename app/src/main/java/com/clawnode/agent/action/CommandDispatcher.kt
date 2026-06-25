@@ -87,6 +87,8 @@ class CommandDispatcher(
         val (ok, msg) = runCatching { onLaunchApp(pkg, cmd.params?.activity) }.getOrElse {
             false to (it.message ?: "launch error")
         }
+        val fg = actionExecutorForegroundPackage()
+        ClawLog.bp(TAG, "open_app_result", "trace=${cmd.safeTraceId} pkg=$pkg ok=$ok fg=$fg")
         ws.sendChecked(NodeResponse.actionResult(cmd.safeTraceId, ok, msg))
     }
 
@@ -229,6 +231,7 @@ class CommandDispatcher(
 
     private fun handleGetForegroundApp(cmd: Command) {
         val pkg = actionExecutorForegroundPackage()
+        ClawLog.bp(TAG, "get_foreground", "trace=${cmd.safeTraceId} pkg=${pkg.ifBlank { "?" }}")
         ws.sendChecked(
             NodeResponse.actionResult(
                 cmd.safeTraceId,
