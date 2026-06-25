@@ -87,10 +87,10 @@ class ActionExecutorService : AccessibilityService() {
         NodeForegroundService.start(applicationContext)
 
         gestureController = GestureController(this)
+        shellController = ShellController(applicationContext)
         appController = AppController(applicationContext, this, shellController).also {
             it.onWakeUp = ::launchWakeUp
         }
-        shellController = ShellController(applicationContext)
         clipboardController = ClipboardController(applicationContext)
         textInputController = TextInputController(this, clipboardController)
         val configManager = ConfigManager.get(applicationContext)
