@@ -91,7 +91,8 @@ class CommandDispatcher(
             ws.sendChecked(NodeResponse.actionResult(cmd.safeTraceId, false, "OPEN_APP requires package"))
             return
         }
-        runCatching { onWakeUp() }
+        // 不在此处单独唤起 WakeUpActivity：AppController 启动链路里的跳板 Activity
+        // 已负责点亮+解锁+启动，重复唤起只会让 ClawNode 先于目标 app 出现在前台。
         val (ok, msg) = runCatching { onLaunchApp(pkg, cmd.params?.activity) }.getOrElse {
             false to (it.message ?: "launch error")
         }
@@ -180,8 +181,10 @@ class CommandDispatcher(
             ws.sendChecked(NodeResponse.actionResult(cmd.safeTraceId, false, "INPUT_TEXT requires text"))
             return
         }
-        runCatching { onWakeUp() }
-        kotlinx.coroutines.delay(700)
+        // ⚠️ 不唤起 WakeUpActivity：它是 ClawNode 的透明窗，会盖到目标 app 上，
+        // 导致无障碍读到的 rootInActiveWindow 变成 ClawNode 自己、找不到输入框
+        // （报 no active window）。输入直接作用于当前前台 app —— 调用方需先用
+        // OPEN_APP 打开带输入框的界面、必要时先 TAP 聚焦输入框。
         val x = cmd.params?.x
         val y = cmd.params?.y
         if (x != null && y != null) {

@@ -108,8 +108,10 @@ class AppController(
     }
 
     private fun prepareWake() {
-        onWakeUp?.invoke()
-        Thread.sleep(650L)
+        // 不在此处唤起 WakeUpActivity：tryLaunchSequence 第一步的跳板 Activity
+        // （LaunchTrampolineActivity）已通过 ScreenWakeHelper 点亮屏幕并解锁。
+        // 在这里再起一个 WakeUpActivity 会让 ClawNode 先于目标 app 闪现在前台。
+        Thread.sleep(350L)
     }
 
     /** 无障碍在后台时优先跳板 Activity（MIUI 会静默丢弃 applicationContext.startActivity）。 */

@@ -16,7 +16,11 @@ object ScreenWakeHelper {
     private const val TAG = "ScreenWake"
 
     /** keyguard dismiss 回调不触发时的兜底延时（HyperOS 上回调常缺失）。 */
-    private const val KEYGUARD_FALLBACK_MS = 900L
+    private const val KEYGUARD_FALLBACK_MS = 2_600L
+
+    /** dismiss 被取消时的重试间隔与最大次数（HyperOS 首次常因无焦点被取消）。 */
+    private const val KEYGUARD_RETRY_MS = 450L
+    private const val KEYGUARD_MAX_RETRY = 4
 
     fun prepareWindow(activity: Activity) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
@@ -56,32 +60,43 @@ object ScreenWakeHelper {
             km != null &&
             km.isKeyguardLocked
         ) {
-            runCatching {
-                km.requestDismissKeyguard(
-                    activity,
-                    object : KeyguardManager.KeyguardDismissCallback() {
-                        override fun onDismissSucceeded() {
-                            ClawLog.bp(TAG, "keyguard_dismissed", "ok")
-                            run()
-                        }
+            val handler = Handler(Looper.getMainLooper())
+            // HyperOS 在 Activity 尚未获得窗口焦点时会取消 dismiss 请求（日志 keyguard_dismiss_cancel），
+            // 表现为第一次只亮屏不解锁、需再唤醒一次。这里在取消时自动重试，直到解锁或重试用尽。
+            fun requestDismiss(attempt: Int) {
+                runCatching {
+                    km.requestDismissKeyguard(
+                        activity,
+                        object : KeyguardManager.KeyguardDismissCallback() {
+                            override fun onDismissSucceeded() {
+                                ClawLog.bp(TAG, "keyguard_dismissed", "ok attempt=$attempt")
+                                run()
+                            }
 
-                        override fun onDismissError() {
-                            ClawLog.w(TAG, "keyguard_dismiss_fail", "proceed anyway")
-                            run()
-                        }
+                            override fun onDismissError() {
+                                ClawLog.w(TAG, "keyguard_dismiss_fail", "proceed anyway")
+                                run()
+                            }
 
-                        override fun onDismissCancelled() {
-                            ClawLog.w(TAG, "keyguard_dismiss_cancel", "proceed anyway")
-                            run()
-                        }
-                    },
-                )
-            }.onFailure {
-                ClawLog.w(TAG, "keyguard_request_fail", it.message ?: "")
-                run()
+                            override fun onDismissCancelled() {
+                                if (attempt < KEYGUARD_MAX_RETRY && km.isKeyguardLocked) {
+                                    ClawLog.w(TAG, "keyguard_dismiss_cancel", "retry attempt=${attempt + 1}")
+                                    handler.postDelayed({ requestDismiss(attempt + 1) }, KEYGUARD_RETRY_MS)
+                                } else {
+                                    ClawLog.w(TAG, "keyguard_dismiss_cancel", "give up, proceed anyway")
+                                    run()
+                                }
+                            }
+                        },
+                    )
+                }.onFailure {
+                    ClawLog.w(TAG, "keyguard_request_fail", it.message ?: "")
+                    run()
+                }
             }
-            // 兜底：回调不触发时（HyperOS 常见）仍执行，避免动作永久卡死
-            Handler(Looper.getMainLooper()).postDelayed({ run() }, KEYGUARD_FALLBACK_MS)
+            requestDismiss(1)
+            // 兜底：所有回调都不触发时（HyperOS 偶见）仍执行 action，避免动作永久卡死
+            handler.postDelayed({ run() }, KEYGUARD_FALLBACK_MS)
         } else {
             run()
         }
