@@ -18,14 +18,20 @@ class ShellController(private val context: Context) {
         val cmd = command.trim()
         if (cmd.isBlank()) return Result(false, "", "empty command")
 
+        // 优先 Shizuku（shell uid，能力最全、无白名单限制）；不可用时回退 app uid。
+        val sh = ShizukuManager.exec(cmd)
+        if (sh.available) {
+            return Result(sh.success, sh.stdout, sh.stderr)
+        }
+
+        // 无 Shizuku：以应用 UID 执行。部分便捷命令用 Android API 直取，避免权限不足。
         return runCatching {
             when {
                 cmd == "getprop" -> execShell("getprop")
                 cmd.startsWith("getprop ") -> getProp(cmd.removePrefix("getprop ").trim())
                 cmd.startsWith("pm path ") -> pmPath(cmd.removePrefix("pm path ").trim())
                 cmd.startsWith("pm clear ") -> pmClear(cmd.removePrefix("pm clear ").trim())
-                isAllowedExec(cmd) -> execShell(cmd)
-                else -> Result(false, "", "command not allowed: $cmd")
+                else -> execShell(cmd)
             }
         }.getOrElse { e ->
             ClawLog.e(TAG, "shell_fail", cmd, e)
@@ -33,10 +39,12 @@ class ShellController(private val context: Context) {
         }
     }
 
-    /** EXEC_SCRIPT 等场景：不经过白名单，以应用 UID 执行任意 sh 命令（非 root）。 */
+    /** EXEC_SCRIPT / 内部回退场景：优先 Shizuku（shell uid），否则以应用 UID 执行任意命令。 */
     fun runRaw(command: String, timeoutSec: Long = RAW_TIMEOUT_SEC): Result {
         val cmd = command.trim()
         if (cmd.isBlank()) return Result(false, "", "empty command")
+        val sh = ShizukuManager.exec(cmd, timeoutSec)
+        if (sh.available) return Result(sh.success, sh.stdout, sh.stderr)
         return runCatching { execShell(cmd, timeoutSec) }.getOrElse { e ->
             ClawLog.e(TAG, "shell_raw_fail", cmd, e)
             Result(false, "", e.message ?: "shell error")
@@ -96,13 +104,6 @@ class ShellController(private val context: Context) {
         return Result(true, "Success")
     }
 
-    private fun isAllowedExec(cmd: String): Boolean {
-        val lower = cmd.lowercase().trimStart()
-        // 只读 / 诊断类命令白名单（以应用 UID 执行，非 root）。
-        // 这些命令无副作用或仅做查询，远程排查设备状态常用。
-        return ALLOWED_PREFIXES.any { lower.startsWith(it) }
-    }
-
     private fun execShell(command: String, timeoutSec: Long = DEFAULT_TIMEOUT_SEC): Result {
         val proc = Runtime.getRuntime().exec(arrayOf("sh", "-c", command))
         val stdout = proc.inputStream.bufferedReader().readText()
@@ -117,35 +118,5 @@ class ShellController(private val context: Context) {
         private const val TAG = "ShellController"
         private const val DEFAULT_TIMEOUT_SEC = 15L
         private const val RAW_TIMEOUT_SEC = 120L
-
-        /**
-         * RUN_SHELL 允许的只读 / 诊断命令前缀（小写匹配）。
-         * 仅放行查询类、无破坏性命令；写入 / 卸载 / reboot 等不在此列。
-         */
-        private val ALLOWED_PREFIXES = listOf(
-            "getprop",
-            "content query",
-            "dumpsys",          // dumpsys <service> 多为只读快照
-            "pm list",          // pm list packages / features / ...
-            "pm path",
-            "pm dump",
-            "cmd package list",
-            "top",              // top -s / -n / -b
-            "ps",
-            "cat /proc",        // 只读虚拟文件，限制在 /proc
-            "ls",
-            "df",
-            "free",
-            "uptime",
-            "wm size",
-            "wm density",
-            "settings get",
-            "ip addr",
-            "ip route",
-            "ifconfig",
-            "am stack list",
-            "dumpsys window",
-            "service list",
-        )
     }
 }

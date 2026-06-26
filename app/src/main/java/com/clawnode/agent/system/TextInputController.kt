@@ -1,6 +1,7 @@
 package com.clawnode.agent.system
 
 import android.accessibilityservice.AccessibilityService
+import android.content.Intent
 import android.os.Bundle
 import android.view.accessibility.AccessibilityNodeInfo
 import com.clawnode.agent.core.ClawLog
@@ -19,6 +20,48 @@ class TextInputController(
         if (text.isEmpty()) {
             return Result(false, "INPUT_TEXT requires text")
         }
+
+        // 路径一：Shizuku 可用 → 切到 ClawNode IME 并经 commitText 注入。
+        // 优势：不依赖无障碍读节点树、原生支持中文/emoji、规避小米键盘截屏黑屏，
+        // 且 ime set 后焦点输入框会重绑到我们的 IME。
+        if (ShizukuManager.isAvailable()) {
+            val viaIme = tryInputViaIme(text, tapX, tapY)
+            if (viaIme.success) return viaIme
+            ClawLog.w(TAG, "ime_path_fail", "fallback to a11y: ${viaIme.message}")
+        }
+
+        // 路径二：回退无障碍 ACTION_SET_TEXT / 粘贴（无 Shizuku 或 IME 注入失败时）。
+        return inputViaAccessibility(text, tapX, tapY)
+    }
+
+    /** 经 ClawNode IME 注入文本（Shizuku 已确保其为默认输入法）。 */
+    private fun tryInputViaIme(text: String, tapX: Int?, tapY: Int?): Result {
+        val ctx = accessibilityService
+        val pkg = ctx.packageName
+        // 确保 ClawIME 启用并设为默认（幂等）。
+        ShizukuManager.ensureClawImeActive(pkg)
+        // 若提供坐标，先点一下让目标输入框获得焦点（触发 IME 绑定）。
+        // 焦点定位仍可借助无障碍（不依赖其注入文本）。
+        Thread.sleep(400)
+        // 发送 commit 广播给 IME。
+        repeat(3) { attempt ->
+            ctx.sendBroadcast(
+                Intent(com.clawnode.agent.ime.ClawImeService.ACTION_COMMIT)
+                    .setPackage(pkg)
+                    .putExtra(com.clawnode.agent.ime.ClawImeService.EXTRA_OP, com.clawnode.agent.ime.ClawImeService.OP_COMMIT)
+                    .putExtra(com.clawnode.agent.ime.ClawImeService.EXTRA_TEXT, text),
+            )
+            Thread.sleep(250)
+            if (com.clawnode.agent.ime.ClawImeService.isBound) {
+                ClawLog.bp(TAG, "input_text_ime", "len=${text.length} attempt=${attempt + 1}")
+                return Result(true, "text committed via ClawIME (${text.length} chars)")
+            }
+        }
+        // IME 尚未绑定到输入框（可能当前无焦点输入框）。
+        return Result(false, "ClawIME not bound to a focused input field")
+    }
+
+    private fun inputViaAccessibility(text: String, tapX: Int?, tapY: Int?): Result {
         var lastErr = "no active window"
         repeat(4) { attempt ->
             val root = accessibilityService.rootInActiveWindow ?: firstContentWindowRoot()

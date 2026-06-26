@@ -67,6 +67,10 @@ class MainActivity : AppCompatActivity() {
         promptInstallPermissionIfNeeded()
         promptOverlayPermissionIfNeeded()
         promptBackgroundProtectionIfNeeded()
+        // Shizuku 服务在运行但未授权时，主动请求一次（用户已激活 Shizuku 的常见场景）
+        if (com.clawnode.agent.system.ShizukuManager.isRunningButUngranted()) {
+            com.clawnode.agent.system.ShizukuManager.requestPermissionIfNeeded()
+        }
     }
 
     override fun onResume() {
@@ -184,6 +188,13 @@ class MainActivity : AppCompatActivity() {
                 AppUpdateManager.openInstallPermissionSettings(this)
             }
         }
+        // Shizuku：激活后 RUN_SHELL 全开、静默更新、自动切输入法。已授权则跳过。
+        if (!com.clawnode.agent.system.ShizukuManager.isAvailable()) {
+            steps += "激活 Shizuku（强力推荐：解锁完整 shell 能力、静默更新、自动切输入法）" to {
+                grantShizukuStep()
+            }
+        }
+
         // 小米专属开关（自启动 / 后台弹出界面 / 锁屏显示）始终引导一次：
         // 系统无法读取其状态，也无法自动开启，更新/重装后可能被重置，必须手动确认。
         steps += "小米权限管理：开启「自启动」「后台弹出界面」「锁屏显示」（必开，且无法自动授予）" to {
@@ -191,6 +202,28 @@ class MainActivity : AppCompatActivity() {
         }
 
         showGrantStep(steps, 0)
+    }
+
+    /** Shizuku 授权引导：服务在运行则直接请求权限；否则提示安装/启动 Shizuku。 */
+    private fun grantShizukuStep() {
+        val sm = com.clawnode.agent.system.ShizukuManager
+        when {
+            sm.isRunningButUngranted() -> sm.requestPermissionIfNeeded()
+            else -> {
+                AlertDialog.Builder(this)
+                    .setTitle("激活 Shizuku")
+                    .setMessage(
+                        "Shizuku 让 ClawNode 以 shell 权限运行：RUN_SHELL 全开、自动更新静默安装、" +
+                            "自动切换输入法（解决小米键盘截屏黑屏）。\n\n" +
+                            "步骤：① 安装 Shizuku app；② 用「无线调试」或 root 启动 Shizuku 服务；" +
+                            "③ 回到本页再点一次「一键授权」即可弹出授权。\n\n" +
+                            "注意：非 root 方式下，手机重启后需重新用无线调试启动 Shizuku 一次。"
+                    )
+                    .setPositiveButton("我已启动，去授权") { _, _ -> sm.requestPermissionIfNeeded() }
+                    .setNegativeButton("知道了", null)
+                    .show()
+            }
+        }
     }
 
     private fun showGrantStep(steps: List<Pair<String, () -> Unit>>, index: Int) {
@@ -516,10 +549,13 @@ class MainActivity : AppCompatActivity() {
             binding.btnCheckUpdate.isEnabled = false
             binding.btnCheckUpdate.text = "检查中…"
             try {
-                if (!AppUpdateManager.canInstallPackages(this@MainActivity)) {
+                // Shizuku 可用时走静默安装，无需「安装未知应用」权限；否则才要求该权限。
+                if (!com.clawnode.agent.system.ShizukuManager.isAvailable() &&
+                    !AppUpdateManager.canInstallPackages(this@MainActivity)
+                ) {
                     AlertDialog.Builder(this@MainActivity)
                         .setTitle("需要安装权限")
-                        .setMessage("自动更新需先允许「安装未知应用」（一次性设置）")
+                        .setMessage("自动更新需先允许「安装未知应用」（一次性设置），或激活 Shizuku 实现静默安装")
                         .setPositiveButton("去设置") { _, _ ->
                             AppUpdateManager.openInstallPermissionSettings(this@MainActivity)
                         }
@@ -536,7 +572,9 @@ class MainActivity : AppCompatActivity() {
                     toast("发现 v${info.latestVersion}，但 Release 无 APK")
                     return@launch
                 }
-                showUpdateDialog(info.latestVersion, info.releaseNotes, info.downloadUrl, info.assetName ?: "ClawNode.apk")
+                // 全自动：发现更新直接下载安装（Shizuku 可用则静默，否则系统确认）。
+                toast("发现 v${info.latestVersion}，开始自动更新…")
+                downloadAndInstall(info.downloadUrl, info.assetName ?: "ClawNode.apk")
             } catch (e: Exception) {
                 ClawLog.e(TAG, "update_check_fail", "", e)
                 if (manual) toast("检查更新失败：${e.message}")
@@ -545,17 +583,6 @@ class MainActivity : AppCompatActivity() {
                 binding.btnCheckUpdate.text = "检查更新（GitHub 自动）"
             }
         }
-    }
-
-    private fun showUpdateDialog(version: String, notes: String, url: String, fileName: String) {
-        AlertDialog.Builder(this)
-            .setTitle("发现新版本 v$version")
-            .setMessage(notes.ifBlank { "将自动下载并弹出系统安装确认。" })
-            .setPositiveButton("立即更新") { _, _ ->
-                lifecycleScope.launch { downloadAndInstall(url, fileName) }
-            }
-            .setNegativeButton("取消", null)
-            .show()
     }
 
     private suspend fun downloadAndInstall(url: String, fileName: String) {

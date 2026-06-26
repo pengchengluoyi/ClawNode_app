@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ClawNode 输入法配置。最小化：不声明设置 Activity，不带子类型 UI。
+  关键：输入视图不设 FLAG_SECURE，故 takeScreenshot 不会黑屏（区别于小米键盘）。
+-->
+<input-method xmlns:android="http://schemas.android.com/apk/res/android"
+    android:supportsSwitchingToNextInputMethod="true">
+    <subtype
+        android:imeSubtypeMode="keyboard"
+        android:label="ClawNode" />
+</input-method>

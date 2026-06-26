@@ -12,8 +12,8 @@ android {
         // takeScreenshot() 是 API 30 引入的硬约束，因此 minSdk 不能低于 30
         minSdk = 30
         targetSdk = 34
-        versionCode = 57
-        versionName = "1.9.3"
+        versionCode = 58
+        versionName = "1.10.0"
     }
 
     signingConfigs {
@@ -80,4 +80,8 @@ dependencies {
 
     // EXEC_SCRIPT：沙箱 JavaScript（Server 下发脚本，免发版扩展能力）
     implementation("org.mozilla:rhino:1.7.15")
+
+    // Shizuku：以 shell(uid=2000) 权限执行命令，免 root 提权（无线调试激活）
+    implementation("dev.rikka.shizuku:api:13.1.5")
+    implementation("dev.rikka.shizuku:provider:13.1.5")
 }

@@ -71,6 +71,8 @@ class NodeForegroundService : Service() {
                 startBeaconLoop()
                 startConnectionWatchdog()
                 ConnectionWatchdog.schedule(applicationContext)
+                // 每日 03:00 定时自动更新（幂等重排）
+                com.clawnode.agent.update.UpdateScheduler.schedule(applicationContext)
             }
         }
         return START_STICKY

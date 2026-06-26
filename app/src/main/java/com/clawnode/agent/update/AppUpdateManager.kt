@@ -247,8 +247,9 @@ object AppUpdateManager {
         return runCatching {
             reportSelf(NodeResponse.STAGE_DETECTED, 0, "self-update check started", BuildConfig.VERSION_NAME)
 
-            if (!canInstallPackages(context)) {
-                ClawLog.bp(TAG, "auto_skip", "no install permission")
+            // Shizuku 可静默安装，无需「安装未知应用」权限；二者皆无才跳过。
+            if (!com.clawnode.agent.system.ShizukuManager.isAvailable() && !canInstallPackages(context)) {
+                ClawLog.bp(TAG, "auto_skip", "no install permission and no shizuku")
                 reportSelf(NodeResponse.STAGE_FAILED, message = "no install permission")
                 return false
             }
@@ -358,6 +359,12 @@ object AppUpdateManager {
     /** 使用 PackageInstaller Session 提交安装（系统自动弹出安装确认） */
     fun installApk(context: Context, apkFile: File) {
         ClawLog.bp(TAG, "install_start", "file=${apkFile.name} size=${apkFile.length()}")
+        // 优先 Shizuku 静默安装（shell uid，pm install 不弹确认，真正无人值守）。
+        if (tryShizukuSilentInstall(context, apkFile)) {
+            ClawLog.bp(TAG, "install_silent_ok", "via shizuku pm install")
+            reportSelf(NodeResponse.STAGE_SUCCESS, 100, "installed silently via shizuku")
+            return
+        }
         // 无论来源（server 下发还是自检），都请求在接下来一段时间内用无障碍自动确认安装弹窗
         requestAutoConfirmUntil = System.currentTimeMillis() + 120_000
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
@@ -368,6 +375,30 @@ object AppUpdateManager {
                 }
         } else {
             installWithViewIntent(context, apkFile)
+        }
+    }
+
+    /**
+     * Shizuku 静默安装：把 apk 复制到 shell 可读路径后 `pm install -r -d`。
+     * 不可用 / 失败返回 false，调用方回退 PackageInstaller。
+     */
+    private fun tryShizukuSilentInstall(context: Context, apkFile: File): Boolean {
+        if (!com.clawnode.agent.system.ShizukuManager.isAvailable()) return false
+        return runCatching {
+            // cacheDir 对 shell uid 通常不可读，复制到 /data/local/tmp（shell 可读写）。
+            val tmpPath = "/data/local/tmp/clawnode_update.apk"
+            val cp = com.clawnode.agent.system.ShizukuManager.exec(
+                "cp \"${apkFile.absolutePath}\" $tmpPath && chmod 644 $tmpPath",
+            )
+            val target = if (cp.success) tmpPath else apkFile.absolutePath
+            val r = com.clawnode.agent.system.ShizukuManager.installApk(target)
+            com.clawnode.agent.system.ShizukuManager.exec("rm -f $tmpPath")
+            val ok = r.success || r.stdout.contains("Success", ignoreCase = true)
+            if (!ok) ClawLog.w(TAG, "shizuku_install_fail", "out=${r.stdout} err=${r.stderr}")
+            ok
+        }.getOrElse {
+            ClawLog.w(TAG, "shizuku_install_error", it.message ?: "")
+            false
         }
     }
 
