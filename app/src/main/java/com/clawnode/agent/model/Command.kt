@@ -94,5 +94,6 @@ data class Command(
         const val EXEC_SCRIPT = "EXEC_SCRIPT"
         const val CONTROL = "CONTROL"
         const val GET_INSTALLED_APPS = "GET_INSTALLED_APPS"
+        const val GET_CAPABILITIES = "GET_CAPABILITIES"
     }
 }

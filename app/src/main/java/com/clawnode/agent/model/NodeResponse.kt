@@ -141,5 +141,14 @@ data class NodeResponse(
             type = TYPE_INSTALLED_APPS,
             data = mapOf("apps" to apps)
         )
+
+        const val TYPE_CAPABILITIES = "CAPABILITIES"
+
+        /** 能力清单上报 / 应答（含版本号与全部指令的参数说明）。 */
+        fun capabilities(traceId: String, manifest: CapabilityManifest.Manifest) = NodeResponse(
+            traceId = traceId,
+            type = TYPE_CAPABILITIES,
+            data = manifest
+        )
     }
 }

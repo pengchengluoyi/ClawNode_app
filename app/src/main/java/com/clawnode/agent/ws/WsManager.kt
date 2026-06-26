@@ -6,6 +6,7 @@ import com.clawnode.agent.core.ConnectionState
 import com.clawnode.agent.core.NodeConfig
 import com.clawnode.agent.core.NodeSettings
 import com.clawnode.agent.core.NodeStatusBus
+import com.clawnode.agent.model.CapabilityManifest
 import com.clawnode.agent.model.Command
 import com.clawnode.agent.model.GatewayControl
 import com.clawnode.agent.model.HeartbeatFrame
@@ -565,7 +566,7 @@ class WsManager(
         if (!ackAction.isNullOrBlank()) {
             ClawLog.bp(TAG, "rx_ack", "action=$ackAction code=${ack?.code}")
             if (ackAction == "register_clawnode" && ack?.code == 200) {
-                setState(ConnectionState.Authenticated)
+                onAuthenticated()
             }
             return
         }
@@ -763,7 +764,16 @@ class WsManager(
 
     private fun handleAuthOk() {
         ClawLog.bp(TAG, "auth_ok", "gateway authenticated")
+        onAuthenticated()
+    }
+
+    /** 鉴权/注册成功后主动上报能力清单，便于服务端可视化调用。 */
+    private fun onAuthenticated() {
         setState(ConnectionState.Authenticated)
+        val sent = sendChecked(
+            NodeResponse.capabilities("node-capabilities", CapabilityManifest.build())
+        )
+        ClawLog.bp(TAG, "capabilities_report", "sent=$sent")
     }
 
     private fun handleAuthFailed(reason: String) {

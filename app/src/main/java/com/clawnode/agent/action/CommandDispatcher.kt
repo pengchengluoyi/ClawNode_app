@@ -1,6 +1,7 @@
 package com.clawnode.agent.action
 
 import com.clawnode.agent.core.ClawLog
+import com.clawnode.agent.model.CapabilityManifest
 import com.clawnode.agent.model.Command
 import com.clawnode.agent.model.NodeResponse
 import com.clawnode.agent.vision.VisionManager
@@ -79,6 +80,7 @@ class CommandDispatcher(
             Command.INPUT_TEXT, "INPUT_TEXT" -> handleInputText(cmd)
             Command.EXEC_SCRIPT, "EXEC_SCRIPT", "RUN_SCRIPT", "EXEC_CODE" -> handleExecScript(cmd)
             Command.GET_INSTALLED_APPS, "GET_INSTALLED_APPS" -> handleGetInstalledApps(cmd)
+            Command.GET_CAPABILITIES, "GET_CAPABILITIES" -> handleGetCapabilities(cmd)
             else -> ws.sendChecked(
                 NodeResponse.actionResult(cmd.safeTraceId, false, "unknown command=${cmd.command} (effective=$key)")
             )
@@ -344,6 +346,10 @@ class CommandDispatcher(
         ws.sendChecked(NodeResponse.installedApps(cmd.safeTraceId, apps.map {
             NodeResponse.InstalledApp(it.packageName, it.label)
         }))
+    }
+
+    private fun handleGetCapabilities(cmd: Command) {
+        ws.sendChecked(NodeResponse.capabilities(cmd.safeTraceId, CapabilityManifest.build()))
     }
 
     companion object {

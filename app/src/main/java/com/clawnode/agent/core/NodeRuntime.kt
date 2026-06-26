@@ -6,6 +6,7 @@ import com.clawnode.agent.BuildConfig
 import com.clawnode.agent.action.ActionExecutorService
 import com.clawnode.agent.discovery.NodeBeacon
 import com.clawnode.agent.discovery.ServerDiscovery
+import com.clawnode.agent.model.CapabilityManifest
 import com.clawnode.agent.model.Command
 import com.clawnode.agent.model.NodeResponse
 import com.clawnode.agent.pairing.PairingBridge
@@ -99,6 +100,10 @@ object NodeRuntime {
         // 指令分发：无障碍在线时交给其 dispatcher；否则回明确失败，但连接/心跳不受影响。
         ws.incomingCommands
             .onEach { cmd ->
+                if (isGetCapabilities(cmd)) {
+                    ws.sendChecked(NodeResponse.capabilities(cmd.safeTraceId, CapabilityManifest.build()))
+                    return@onEach
+                }
                 val handler = commandHandler
                 if (handler != null) {
                     handler(cmd)
@@ -137,6 +142,16 @@ object NodeRuntime {
     /** 看门狗 / 亮屏 / 网络变化触发的重连入口。 */
     fun reconnectIfNeeded() {
         wsManager?.reconnectIfNeeded()
+    }
+
+    private fun isGetCapabilities(cmd: Command): Boolean {
+        val raw = (cmd.command ?: "").trim()
+        val sub = cmd.params?.action?.trim()?.uppercase()
+        val key = when {
+            raw.equals("control", ignoreCase = true) && !sub.isNullOrBlank() -> sub
+            else -> raw.uppercase()
+        }
+        return key == Command.GET_CAPABILITIES
     }
 
     private fun buildDeviceMeta(context: Context, model: String): WsManager.DeviceMeta {
