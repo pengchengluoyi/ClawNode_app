@@ -2,14 +2,19 @@
 <!--
   canPerformGestures：开启手势注入能力（dispatchGesture 的前提）
   canTakeScreenshot：开启 takeScreenshot() 能力（API 30+）
-  我们不关心 UI 节点树，因此事件类型与反馈类型保持最小集即可
+  canRetrieveWindowContent：读取窗口节点树（rootInActiveWindow / findFocus / SET_TEXT
+    必须；为 false 时 rootInActiveWindow 恒为 null，INPUT_TEXT 永远报 no active window）
+  flagRetrieveInteractiveWindows：允许 getWindows() 枚举所有可交互窗口，
+    以便在 rootInActiveWindow 落在 IME/overlay 时仍能定位目标 app 的输入框
+  accessibilityEventTypes：typeWindowStateChanged 用于前台包名跟踪；
+    typeWindowContentChanged 便于及时刷新节点树
 -->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
-    android:accessibilityEventTypes="typeWindowStateChanged"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged"
     android:accessibilityFeedbackType="feedbackGeneric"
-    android:accessibilityFlags="flagDefault"
+    android:accessibilityFlags="flagDefault|flagRetrieveInteractiveWindows|flagIncludeNotImportantViews"
     android:canPerformGestures="true"
-    android:canRetrieveWindowContent="false"
+    android:canRetrieveWindowContent="true"
     android:canTakeScreenshot="true"
     android:description="@string/accessibility_description"
     android:notificationTimeout="100" />

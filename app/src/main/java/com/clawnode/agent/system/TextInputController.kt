@@ -21,7 +21,7 @@ class TextInputController(
         }
         var lastErr = "no active window"
         repeat(4) { attempt ->
-            val root = accessibilityService.rootInActiveWindow
+            val root = accessibilityService.rootInActiveWindow ?: firstContentWindowRoot()
             if (root == null) {
                 lastErr = "no active window (wake screen and open app with input field first)"
                 if (attempt < 3) {
@@ -34,6 +34,10 @@ class TextInputController(
             var target = findFocusedEditable(root)
             if (target == null && tapX != null && tapY != null) {
                 target = findEditableNear(root, tapX, tapY)
+            }
+            // active window 没有输入框时（如焦点在 IME 窗口），跨所有窗口再找一次
+            if (target == null) {
+                target = findEditableAcrossWindows(tapX, tapY)
             }
             if (target == null) {
                 root.recycle()
@@ -146,6 +150,32 @@ class TextInputController(
         if (node.isEditable) return true
         val cls = node.className?.toString().orEmpty().lowercase()
         return cls.contains("edittext") || cls.contains("editing")
+    }
+
+    /** rootInActiveWindow 为 null 时，取第一个能拿到内容的窗口根节点。 */
+    private fun firstContentWindowRoot(): AccessibilityNodeInfo? {
+        return runCatching {
+            accessibilityService.windows
+                ?.asSequence()
+                ?.mapNotNull { it.root }
+                ?.firstOrNull()
+        }.getOrNull()
+    }
+
+    /** 跨所有可交互窗口查找输入框（焦点落在 IME/overlay 窗口时的兜底）。 */
+    private fun findEditableAcrossWindows(x: Int?, y: Int?): AccessibilityNodeInfo? {
+        val windows = runCatching { accessibilityService.windows }.getOrNull() ?: return null
+        for (win in windows) {
+            val root = win.root ?: continue
+            val found = if (x != null && y != null) {
+                findEditableContaining(root, x, y) ?: findFocusedEditable(root)
+            } else {
+                findFocusedEditable(root)
+            }
+            root.recycle()
+            if (found != null) return found
+        }
+        return null
     }
 
     companion object {
