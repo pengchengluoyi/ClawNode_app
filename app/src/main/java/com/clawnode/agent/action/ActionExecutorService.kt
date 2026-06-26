@@ -93,56 +93,12 @@ class ActionExecutorService : AccessibilityService() {
         }
         clipboardController = ClipboardController(applicationContext)
         textInputController = TextInputController(this, clipboardController)
-        val configManager = ConfigManager.get(applicationContext)
-        wsManager = WsManager(
-            scope,
-            discoverServer = { pairedGatewayId ->
-                val gateways = com.clawnode.agent.discovery.ServerDiscovery.findGateways(applicationContext)
-                val gateway = com.clawnode.agent.discovery.ServerDiscovery.matchPaired(gateways, pairedGatewayId)
-                    ?: gateways.firstOrNull()
-                    ?: return@WsManager null
-                val settings = configManager.settings.first()
-                com.clawnode.agent.discovery.ServerDiscovery.resolveReachableWsUrl(
-                    gateway,
-                    settings.authToken,
-                    settings.nodeSn,
-                )
-            },
-            onPairConfig = { wsUrl, authToken, gatewayId ->
-                configManager.savePairing(wsUrl, authToken, gatewayId)
-            },
-            onUrlDiscovered = { wsUrl ->
-                configManager.saveDiscoveredUrl(wsUrl)
-            },
-            onUnpair = {
-                configManager.clearPairing()
-                val meta = buildDeviceMeta()
-                com.clawnode.agent.discovery.NodeBeacon.start(
-                    applicationContext,
-                    sn = configManager.defaultNodeSn,
-                    model = meta.model,
-                    paired = false,
-                )
-                PairingHttpServer.start()
-            },
-        )
-        wsManager.setDeviceMeta(buildDeviceMeta())
-        PairingBridge.onPairPush = { payload ->
-            wsManager.applyPairConfigPush(payload.wsUrl, payload.authToken, payload.gatewayId)
-        }
 
-        // Wire self-update progress (for progress bar on server side for ClawNode self-update path)
-        AppUpdateManager.setSelfProgressReporter { stage, percent, message, version ->
-            wsManager.sendChecked(
-                NodeResponse.installProgress(
-                    traceId = "self-update",
-                    stage = stage,
-                    percent = percent,
-                    message = message,
-                    version = version
-                )
-            )
-        }
+        // 连接所有权在 NodeRuntime（由前台服务持有），与无障碍解耦：
+        // 无障碍仅在存活时挂接「指令执行」能力。先确保运行时已启动并取得 WsManager。
+        com.clawnode.agent.core.NodeRuntime.ensureStarted(applicationContext)
+        wsManager = com.clawnode.agent.core.NodeRuntime.wsManager
+            ?: throw IllegalStateException("NodeRuntime.wsManager null after ensureStarted")
         StreamBridge.wsRef = wsManager
         visionManager = VisionManager(
             context = applicationContext,
@@ -228,13 +184,8 @@ class ActionExecutorService : AccessibilityService() {
             },
         )
 
-        wsManager.incomingCommands
-            .onEach { dispatcher.dispatch(it) }
-            .launchIn(scope)
-
-        ConfigManager.get(applicationContext).settings
-            .onEach { wsManager.applySettings(it) }
-            .launchIn(scope)
+        // 把指令执行能力挂接到运行时；连接 / 注册 / 心跳由 NodeRuntime 独立维持。
+        com.clawnode.agent.core.NodeRuntime.attachExecutor { dispatcher.dispatch(it) }
 
         registerScreenWakeReceiver()
         registerNetworkMonitor()
@@ -311,19 +262,6 @@ class ActionExecutorService : AccessibilityService() {
         val ok = performGlobalAction(action)
         ClawLog.bp(TAG, "key_event", "key=$key ok=$ok")
         return ok
-    }
-
-    private fun buildDeviceMeta(): WsManager.DeviceMeta {
-        val model = "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}".trim()
-        val osVersion = "Android ${android.os.Build.VERSION.RELEASE}"
-        val dm = resources.displayMetrics
-        val resolution = "${dm.widthPixels}x${dm.heightPixels}"
-        return WsManager.DeviceMeta(
-            model = model,
-            osVersion = osVersion,
-            resolution = resolution,
-            appVersion = BuildConfig.VERSION_NAME,
-        )
     }
 
     suspend fun captureScreenshotBitmap(): Result<Bitmap> =
@@ -452,20 +390,18 @@ class ActionExecutorService : AccessibilityService() {
     }
 
     private fun teardown() {
-        ClawLog.bp(TAG, "teardown", "releasing node resources")
+        ClawLog.bp(TAG, "teardown", "releasing accessibility-owned resources only")
+        // 只释放无障碍自身的资源，并摘掉指令执行器。
+        // 不再停止前台服务 / WsManager / KeepAlive —— 网关连接归 NodeRuntime（前台服务）所有，
+        // 无障碍关闭不应让节点离线（否则就退回「关无障碍即掉线」的老问题）。
+        com.clawnode.agent.core.NodeRuntime.detachExecutor()
         unregisterScreenWakeReceiver()
         unregisterNetworkMonitor()
-        ConnectionKeepAlive.release()
         if (instance === this) instance = null
-        NodeForegroundService.stop(applicationContext)
         StreamBridge.wsRef = null
         if (::visionManager.isInitialized) {
             runCatching { visionManager.stopStream(null) }
         }
-        if (::wsManager.isInitialized) {
-            runCatching { wsManager.stop() }
-        }
-        NodeStatusBus.reset()
         runCatching { screenshotExecutor.shutdownNow() }
         scope.cancel()
     }

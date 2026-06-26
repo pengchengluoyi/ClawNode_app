@@ -14,7 +14,6 @@ import com.clawnode.agent.R
 import com.clawnode.agent.core.ClawLog
 import com.clawnode.agent.core.ConfigManager
 import com.clawnode.agent.discovery.NodeBeacon
-import com.clawnode.agent.action.ActionExecutorService
 import com.clawnode.agent.pairing.PairingHttpServer
 import com.clawnode.agent.ws.ConnectionWatchdog
 import com.clawnode.agent.ws.ConnectionKeepAlive
@@ -67,6 +66,8 @@ class NodeForegroundService : Service() {
                 ClawLog.bp(TAG, "onStartCommand", "enter foreground")
                 ConnectionKeepAlive.acquire(applicationContext)
                 promoteToForeground()
+                // 网关连接所有权在前台服务，与无障碍无关：保证无障碍未开时节点仍在线。
+                com.clawnode.agent.core.NodeRuntime.ensureStarted(applicationContext)
                 startBeaconLoop()
                 startConnectionWatchdog()
                 ConnectionWatchdog.schedule(applicationContext)
@@ -136,7 +137,7 @@ class NodeForegroundService : Service() {
             while (isActive) {
                 delay(CONNECTION_WATCHDOG_MS)
                 ConnectionKeepAlive.acquire(applicationContext)
-                ActionExecutorService.instance?.reconnectWebSocketIfNeeded()
+                com.clawnode.agent.core.NodeRuntime.reconnectIfNeeded()
             }
         }
     }
