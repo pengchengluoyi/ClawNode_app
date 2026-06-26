@@ -236,7 +236,17 @@ class ActionExecutorService : AccessibilityService() {
     }
 
     private fun launchWakeUp() {
-        ClawLog.bp(TAG, "wake_up", "launching WakeUpActivity")
+        // 屏幕已亮且未锁屏时，无需启动 WakeUpActivity——否则 ClawNode 的透明 Activity
+        // 会被拉到前台，盖住当前应用（表现为「点亮屏幕先把 ClawNode 拉前台」）。
+        val pm = getSystemService(POWER_SERVICE) as? android.os.PowerManager
+        val km = getSystemService(KEYGUARD_SERVICE) as? android.app.KeyguardManager
+        val screenOn = pm?.isInteractive == true
+        val locked = km?.isKeyguardLocked == true
+        if (screenOn && !locked) {
+            ClawLog.bp(TAG, "wake_up", "skip: screen already on and unlocked")
+            return
+        }
+        ClawLog.bp(TAG, "wake_up", "launching WakeUpActivity (screenOn=$screenOn locked=$locked)")
         val intent = Intent(this, WakeUpActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
         startActivity(intent)

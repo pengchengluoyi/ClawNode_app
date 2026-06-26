@@ -1,6 +1,7 @@
 package com.clawnode.agent.vision
 
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import com.clawnode.agent.action.ActionExecutorService
 import com.clawnode.agent.core.AppForeground
@@ -114,6 +115,16 @@ class VisionManager(
         )
 
         if (!MediaProjectionHolder.hasAuthorization()) {
+            // 无 live 授权：MediaProjection token 无法跨进程重启复用（Android 平台限制）。
+            // 若曾授权过，自动拉起授权弹窗（用户点一下即可），免去先进 app 操作。
+            if (MediaProjectionHolder.hasPriorGrant(context)) {
+                requestProjectionAuthorization(traceId)
+                return Result.failure(
+                    IllegalStateException(
+                        "screen capture authorization expired after restart (Android limitation); a re-authorize dialog was popped—approve it then retry"
+                    )
+                )
+            }
             return Result.failure(
                 IllegalStateException(
                     "background screenshot requires screen capture authorization; open ClawNode app and tap 屏幕捕获授权"
@@ -150,11 +161,31 @@ class VisionManager(
         ClawLog.bp(TAG, "stream_start", "trace=${cmd.safeTraceId} fps=$fps")
 
         if (!MediaProjectionHolder.hasAuthorization()) {
+            if (MediaProjectionHolder.hasPriorGrant(context)) {
+                requestProjectionAuthorization(cmd.safeTraceId)
+                ws.sendChecked(NodeResponse.streamStatus(cmd.safeTraceId, false, "screen capture authorization expired after restart; re-authorize dialog popped—approve then retry"))
+                return
+            }
             ws.sendChecked(NodeResponse.streamStatus(cmd.safeTraceId, false, "stream requires screen capture authorization; authorize in ClawNode app"))
             return
         }
 
         StreamForegroundService.start(context, cmd.safeTraceId, fps)
+    }
+
+    /** 拉起透明授权 Activity，自动恢复屏幕捕获授权（曾授权过时按需调用）。 */
+    private fun requestProjectionAuthorization(traceId: String) {
+        runCatching {
+            val intent = Intent(context, com.clawnode.agent.system.MediaProjectionRequestActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                .putExtra(com.clawnode.agent.system.MediaProjectionRequestActivity.EXTRA_MODE,
+                    com.clawnode.agent.system.MediaProjectionRequestActivity.MODE_AUTHORIZE)
+                .putExtra(com.clawnode.agent.system.MediaProjectionRequestActivity.EXTRA_TRACE_ID, traceId)
+            context.startActivity(intent)
+            ClawLog.bp(TAG, "auth_auto_request", "trace=$traceId popped re-authorize dialog")
+        }.onFailure {
+            ClawLog.w(TAG, "auth_auto_request_fail", it.message ?: "")
+        }
     }
 
     fun stopStream(cmd: Command?) {

@@ -181,10 +181,27 @@ class CommandDispatcher(
             ws.sendChecked(NodeResponse.actionResult(cmd.safeTraceId, false, "INPUT_TEXT requires text"))
             return
         }
-        // ⚠️ 不唤起 WakeUpActivity：它是 ClawNode 的透明窗，会盖到目标 app 上，
-        // 导致无障碍读到的 rootInActiveWindow 变成 ClawNode 自己、找不到输入框
-        // （报 no active window）。输入直接作用于当前前台 app —— 调用方需先用
-        // OPEN_APP 打开带输入框的界面、必要时先 TAP 聚焦输入框。
+        // 锁屏（带 PIN/图案/密码）是系统安全窗口，无障碍无法读取内容或注入文本——
+        // 这是 Android 安全限制，任何第三方都绕不过。这里先尝试唤醒解锁，给系统留出时间；
+        // 若设备设了密码锁屏、无人解锁，则只能点亮但无法真正进入，输入仍会失败并回明确提示。
+        if (isKeyguardLocked()) {
+            ClawLog.bp(TAG, "input_text_locked", "trace=${cmd.safeTraceId} try wake+unlock first")
+            runCatching { onWakeUp() }
+            kotlinx.coroutines.delay(1500)
+            if (isKeyguardLocked()) {
+                ws.sendChecked(
+                    NodeResponse.actionResult(
+                        cmd.safeTraceId,
+                        false,
+                        "device is locked; INPUT_TEXT cannot work on the secure keyguard. Unlock the device (remove PIN or unlock first) then retry.",
+                    )
+                )
+                return
+            }
+        }
+        // ⚠️ 解锁后不再唤起 WakeUpActivity：它是 ClawNode 的透明窗，会盖到目标 app 上，
+        // 导致无障碍读到的 rootInActiveWindow 变成 ClawNode 自己、找不到输入框。
+        // 输入直接作用于当前前台 app —— 调用方需先用 OPEN_APP 打开带输入框的界面、必要时先 TAP 聚焦。
         val x = cmd.params?.x
         val y = cmd.params?.y
         if (x != null && y != null) {
@@ -197,6 +214,16 @@ class CommandDispatcher(
         ClawLog.bp(TAG, "input_text_done", "trace=${cmd.safeTraceId} ok=$ok len=${text.length}")
         if (ok) vision.invalidateScreenshotCache()
         ws.sendChecked(NodeResponse.actionResult(cmd.safeTraceId, ok, msg))
+    }
+
+    private fun isKeyguardLocked(): Boolean {
+        return try {
+            val km = ActionExecutorService.instance
+                ?.getSystemService(android.content.Context.KEYGUARD_SERVICE) as? android.app.KeyguardManager
+            km?.isKeyguardLocked == true
+        } catch (_: Exception) {
+            false
+        }
     }
 
     private suspend fun handleExecScript(cmd: Command) {

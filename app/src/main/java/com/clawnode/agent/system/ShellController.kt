@@ -97,12 +97,10 @@ class ShellController(private val context: Context) {
     }
 
     private fun isAllowedExec(cmd: String): Boolean {
-        val lower = cmd.lowercase()
-        return lower.startsWith("content query") ||
-            lower.startsWith("dumpsys iphonesubinfo") ||
-            lower.startsWith("dumpsys telephony") ||
-            lower.startsWith("ls ") ||
-            lower.startsWith("getprop")
+        val lower = cmd.lowercase().trimStart()
+        // 只读 / 诊断类命令白名单（以应用 UID 执行，非 root）。
+        // 这些命令无副作用或仅做查询，远程排查设备状态常用。
+        return ALLOWED_PREFIXES.any { lower.startsWith(it) }
     }
 
     private fun execShell(command: String, timeoutSec: Long = DEFAULT_TIMEOUT_SEC): Result {
@@ -119,5 +117,35 @@ class ShellController(private val context: Context) {
         private const val TAG = "ShellController"
         private const val DEFAULT_TIMEOUT_SEC = 15L
         private const val RAW_TIMEOUT_SEC = 120L
+
+        /**
+         * RUN_SHELL 允许的只读 / 诊断命令前缀（小写匹配）。
+         * 仅放行查询类、无破坏性命令；写入 / 卸载 / reboot 等不在此列。
+         */
+        private val ALLOWED_PREFIXES = listOf(
+            "getprop",
+            "content query",
+            "dumpsys",          // dumpsys <service> 多为只读快照
+            "pm list",          // pm list packages / features / ...
+            "pm path",
+            "pm dump",
+            "cmd package list",
+            "top",              // top -s / -n / -b
+            "ps",
+            "cat /proc",        // 只读虚拟文件，限制在 /proc
+            "ls",
+            "df",
+            "free",
+            "uptime",
+            "wm size",
+            "wm density",
+            "settings get",
+            "ip addr",
+            "ip route",
+            "ifconfig",
+            "am stack list",
+            "dumpsys window",
+            "service list",
+        )
     }
 }
