@@ -22,6 +22,7 @@ import com.clawnode.agent.core.NodeStatusBus
 import android.view.LayoutInflater
 import android.widget.ArrayAdapter
 import android.widget.ListView
+import com.clawnode.agent.discovery.GatewayAddress
 import com.clawnode.agent.discovery.GatewayProbe
 import com.clawnode.agent.discovery.ServerDiscovery
 import com.clawnode.agent.databinding.ActivityMainBinding
@@ -57,8 +58,8 @@ class MainActivity : AppCompatActivity() {
             val sn = config.defaultNodeSn
             binding.tvConnState.text = "节点 SN：$sn\n等待桌面端添加…"
             val s = config.settings.first()
-            if (s.wsUrl.isBlank()) {
-                config.save(NodeSettings.AUTO_DISCOVERY_URL, "")
+            if (s.wsUrl.isBlank() || GatewayAddress.isFixedIpWsUrl(s.wsUrl)) {
+                config.save(NodeSettings.AUTO_DISCOVERY_URL, s.authToken)
             }
         }
         bindButtons()
@@ -618,24 +619,26 @@ class MainActivity : AppCompatActivity() {
     private fun renderConnection(state: ConnectionState) {
         binding.tvConnState.text = when (state) {
             is ConnectionState.Idle -> "⚪ 未连接（请确认无障碍已开启且已填写 Token）"
-            is ConnectionState.Discovering -> "🔍 正在发现局域网网关…"
+            is ConnectionState.Discovering -> "🔍 正在通过 mDNS 发现局域网网关…"
             is ConnectionState.Connecting -> "🟡 连接中…"
             is ConnectionState.Connected -> "🟡 已连接，鉴权中…"
             is ConnectionState.Authenticated -> "🟢 已连接且已鉴权"
             is ConnectionState.Reconnecting -> "🟠 重连中…（第 ${state.attempt} 次，${state.nextDelayMs}ms 后）"
-            is ConnectionState.Disconnected -> "🔴 已断开：${state.reason}"
-            is ConnectionState.AuthFailed -> {
-                val r = state.reason.lowercase()
-                val msg = when {
-                    r.contains("failed to connect") || r.contains("timeout") || r.contains("connectexception") ->
-                        "无法连接到网关（网络不通或服务未在该IP监听）: ${state.reason}"
-                    r.contains("401") || r.contains("403") || r.contains("token") || r.contains("auth") ->
-                        "Token 无效或被拒绝: ${state.reason}"
-                    else -> "连接/鉴权失败: ${state.reason}"
-                }
-                "⛔ $msg"
-            }
+            is ConnectionState.Disconnected -> "🔴 ${formatGatewayFailure(state.reason)}"
+            is ConnectionState.AuthFailed -> "⛔ ${formatGatewayFailure(state.reason)}"
             is ConnectionState.Unpaired -> "⚪ 已解绑，等待桌面端重新添加配对"
+        }
+    }
+
+    private fun formatGatewayFailure(reason: String): String {
+        val r = reason.lowercase()
+        return when {
+            r.contains("failed to connect") || r.contains("timeout") ||
+                r.contains("connectexception") || r.contains("network_unreachable") ->
+                "无法连接到网关（正在通过 mDNS 重新发现，请确认与网关在同一 Wi-Fi）"
+            r.contains("401") || r.contains("403") || r.contains("token") || r.contains("auth") ->
+                "Token 无效或被拒绝: $reason"
+            else -> "连接/鉴权失败: $reason"
         }
     }
 

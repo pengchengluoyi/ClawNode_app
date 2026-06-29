@@ -66,6 +66,19 @@ object ServerDiscovery {
             withTimeoutOrNull(timeoutMs) { scanNodes(context.applicationContext) } ?: emptyList()
         }
 
+    /** 按配对信息通过 mDNS 解析当前可达 ws URL；未配对时返回 null。 */
+    suspend fun resolvePairedGatewayWsUrl(
+        context: Context,
+        pairedGatewayId: String,
+        authToken: String,
+        nodeSn: String,
+    ): String? {
+        if (pairedGatewayId.isBlank()) return null
+        val gateways = findGateways(context)
+        val gateway = matchPaired(gateways, pairedGatewayId) ?: return null
+        return resolveReachableWsUrl(gateway, authToken, nodeSn)
+    }
+
     /** 已配对 gatewayId 在 mDNS 列表中刷新 IP（鉴权不在此阶段） */
     fun matchPaired(gateways: List<Gateway>, pairedGatewayId: String): Gateway? {
         if (pairedGatewayId.isBlank()) return null

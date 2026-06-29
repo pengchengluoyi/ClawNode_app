@@ -7,6 +7,8 @@ import com.clawnode.agent.BuildConfig
 import com.clawnode.agent.core.ClawLog
 import com.clawnode.agent.core.ConfigManager
 import com.clawnode.agent.core.NodeSettings
+import com.clawnode.agent.discovery.GatewayAddress
+import com.clawnode.agent.discovery.ServerDiscovery
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
@@ -59,13 +61,11 @@ object LogUploadManager {
         out
     }
 
-    /** 上传到网关；失败时可改用 [shareLogFile] */
+    /** 上传到网关；连接地址优先通过 mDNS 解析，避免使用已过期的固定 IP。 */
     suspend fun upload(context: Context, settings: NodeSettings, windowMinutes: Int = DEFAULT_WINDOW_MINUTES): UploadResult =
         withContext(Dispatchers.IO) {
-            val wsUrl = settings.wsUrl
-            if (!settings.isConnectable) {
-                return@withContext UploadResult(false, "请先配置有效的 WebSocket URL")
-            }
+            val wsUrl = resolveWsUrlForUpload(context, settings)
+                ?: return@withContext UploadResult(false, "未发现局域网网关，请确认与网关在同一 Wi-Fi")
             val uploadUrl = deriveUploadUrl(wsUrl)
             val file = prepareExportFile(context, windowMinutes)
 
@@ -146,5 +146,40 @@ object LogUploadManager {
             (scheme == "http" && port == 80) || (scheme == "https" && port == 443)
         ) "" else ":$port"
         return "$scheme://$host$portPart/api/clawnode/logs"
+    }
+
+    /** 上传/导出时解析当前网关 ws URL：mDNS 优先，不落回已保存的固定 IP。 */
+    suspend fun resolveWsUrlForUpload(context: Context, settings: NodeSettings): String? {
+        if (settings.userUnpaired) return null
+
+        val saved = settings.wsUrl
+        val shouldDiscover = settings.usesAutoDiscovery ||
+            settings.pairedGatewayId.isNotBlank() ||
+            GatewayAddress.isFixedIpWsUrl(saved)
+
+        if (shouldDiscover) {
+            val resolved = if (settings.pairedGatewayId.isNotBlank()) {
+                ServerDiscovery.resolvePairedGatewayWsUrl(
+                    context,
+                    settings.pairedGatewayId,
+                    settings.authToken,
+                    settings.nodeSn,
+                )
+            } else {
+                val gateways = ServerDiscovery.findGateways(context)
+                val gateway = gateways.firstOrNull() ?: return null
+                ServerDiscovery.resolveReachableWsUrl(gateway, settings.authToken, settings.nodeSn)
+            }
+            if (!resolved.isNullOrBlank()) {
+                if (resolved != saved) {
+                    ConfigManager.get(context).saveDiscoveredUrl(resolved)
+                }
+                return resolved
+            }
+            if (saved.contains(".local", ignoreCase = true)) return saved
+            return null
+        }
+
+        return saved.takeIf { it.isNotBlank() && settings.isConnectable }
     }
 }

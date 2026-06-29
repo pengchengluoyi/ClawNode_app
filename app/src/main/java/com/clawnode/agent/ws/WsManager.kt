@@ -332,20 +332,26 @@ class WsManager(
     /** 
      * Resolve the WS URL to connect to.
      *
-     * Strategy for reliability + resilience:
-     * - If we have a concrete saved URL that looks like a direct connect target (ws://IP or ws://name that we previously succeeded with), prefer it for fast startup.
-     * - Only do fresh mDNS discovery eagerly for "auto" mode (ws://auto / blank).
-     * - When pairedGatewayId is present, we still allow discovery, but we do NOT blindly replace a working saved IP with a discovery result that may contain an unresolvable .local name.
-     * - Real IP refresh happens on connect failure (after DISCOVERY_AFTER_FAILURES) via tryAutoDiscovery, or on explicit net change / manual discover.
-     * - Discovery (via paired id) finds the gateway via mDNS service records and returns the address that was resolved at that moment (usually the current LAN IP).
+     * Always prefer mDNS discovery when paired or in auto mode.
+     * Saved RFC1918 IPs are never used directly — they are stale after DHCP / Wi-Fi changes.
+     * Persisted .local hostnames are used only when discovery temporarily finds nothing.
      */
     private suspend fun resolveConnectUrl(): String? {
         val current = settings
         val saved = current.wsUrl
 
-        // 自动模式，或 Wi-Fi 切换后：先 mDNS 刷新，避免继续连旧网段 IP / overlay 地址。
-        if (current.usesAutoDiscovery || forceDiscoveryRefresh) {
-            val reason = if (current.usesAutoDiscovery) "auto_mode" else "net_change"
+        val shouldDiscover = current.usesAutoDiscovery ||
+            forceDiscoveryRefresh ||
+            current.pairedGatewayId.isNotBlank() ||
+            com.clawnode.agent.discovery.GatewayAddress.isFixedIpWsUrl(saved)
+
+        if (shouldDiscover) {
+            val reason = when {
+                forceDiscoveryRefresh -> "net_change"
+                current.usesAutoDiscovery -> "auto_mode"
+                com.clawnode.agent.discovery.GatewayAddress.isFixedIpWsUrl(saved) -> "replace_fixed_ip"
+                else -> "paired_refresh"
+            }
             forceDiscoveryRefresh = false
             val fresh = runDiscovery(reason)
             if (!fresh.isNullOrBlank()) {
@@ -355,34 +361,10 @@ class WsManager(
                 }
                 return fresh
             }
-            return saved.takeIf { it.isNotBlank() }
-        }
-
-        val savedHost = com.clawnode.agent.discovery.GatewayAddress.extractHostFromWsUrl(saved)
-        val savedHostStale = savedHost != null &&
-            !com.clawnode.agent.discovery.GatewayAddress.isPrivateLanIp(savedHost) &&
-            com.clawnode.agent.discovery.GatewayAddress.isOverlayOrCgnatIp(savedHost)
-
-        val looksLikeNameBased = saved.contains(".local", ignoreCase = true)
-
-        // 已保存的私网 IP：直连；overlay / 不可达地址则先发现。
-        if ((saved.startsWith("ws://") || saved.startsWith("wss://")) && !looksLikeNameBased && !savedHostStale) {
-            return saved
-        }
-
-        // Saved URL is a .local name, or we have no usable saved URL but we are paired.
-        // In these cases do a fresh mDNS discovery. The discovery result now returns the address that
-        // was successfully resolved via NsdServiceInfo (usually the current LAN IP), which is much more
-        // reliable than trying to resolve the .local hostname from the device.
-        if (looksLikeNameBased || saved.isBlank() || current.pairedGatewayId.isNotBlank()) {
-            val reason = when {
-                looksLikeNameBased -> "name_to_ip_refresh"
-                saved.isBlank() -> "missing_url_with_pair"
-                else -> "paired_refresh"
+            if (saved.contains(".local", ignoreCase = true)) {
+                return saved
             }
-            val fresh = runDiscovery(reason)
-            if (!fresh.isNullOrBlank()) return fresh
-            // Discovery gave nothing useful — fall back to whatever we had (might be a name that works on this network).
+            return saved.takeIf { it.isNotBlank() && !com.clawnode.agent.discovery.GatewayAddress.isFixedIpWsUrl(saved) }
         }
 
         return saved.takeIf { it.isNotBlank() }
@@ -721,14 +703,23 @@ class WsManager(
         }
 
         val pushedHost = com.clawnode.agent.discovery.GatewayAddress.extractHostFromWsUrl(wsUrl)
-        if (pushedHost != null && com.clawnode.agent.discovery.GatewayAddress.isOverlayOrCgnatIp(pushedHost)) {
-            val lanUrl = runDiscovery("pair_config_lan")
-            val lanHost = lanUrl?.let { com.clawnode.agent.discovery.GatewayAddress.extractHostFromWsUrl(it) }
-            if (!lanUrl.isNullOrBlank() && lanHost != null &&
-                com.clawnode.agent.discovery.GatewayAddress.isPrivateLanIp(lanHost)
-            ) {
-                ClawLog.bp(TAG, "pair_config_lan_prefer", "overlay=$wsUrl → $lanUrl")
-                wsUrl = lanUrl
+        if (pushedHost != null &&
+            (com.clawnode.agent.discovery.GatewayAddress.isOverlayOrCgnatIp(pushedHost) ||
+                com.clawnode.agent.discovery.GatewayAddress.isFixedIpWsUrl(wsUrl))
+        ) {
+            val mdnsUrl = runDiscovery("pair_config_mdns")
+            if (!mdnsUrl.isNullOrBlank()) {
+                ClawLog.bp(TAG, "pair_config_mdns_prefer", "from=$wsUrl → $mdnsUrl")
+                wsUrl = mdnsUrl
+            } else {
+                val lanUrl = runDiscovery("pair_config_lan")
+                val lanHost = lanUrl?.let { com.clawnode.agent.discovery.GatewayAddress.extractHostFromWsUrl(it) }
+                if (!lanUrl.isNullOrBlank() && lanHost != null &&
+                    com.clawnode.agent.discovery.GatewayAddress.isPrivateLanIp(lanHost)
+                ) {
+                    ClawLog.bp(TAG, "pair_config_lan_prefer", "overlay=$wsUrl → $lanUrl")
+                    wsUrl = lanUrl
+                }
             }
         }
 

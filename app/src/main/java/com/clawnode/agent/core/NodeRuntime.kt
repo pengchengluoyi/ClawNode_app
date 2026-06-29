@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Build
 import com.clawnode.agent.BuildConfig
 import com.clawnode.agent.action.ActionExecutorService
+import com.clawnode.agent.discovery.GatewayAddress
 import com.clawnode.agent.discovery.NodeBeacon
 import com.clawnode.agent.discovery.ServerDiscovery
 import com.clawnode.agent.model.CapabilityManifest
@@ -19,6 +20,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.launch
 
 /**
  * 节点运行时核心：持有 [WsManager] 并驱动网关连接 / 注册 / 心跳。
@@ -60,12 +62,19 @@ object NodeRuntime {
         val ws = WsManager(
             scope = s,
             discoverServer = { pairedGatewayId ->
-                val gateways = ServerDiscovery.findGateways(appCtx)
-                val gateway = ServerDiscovery.matchPaired(gateways, pairedGatewayId)
-                    ?: gateways.firstOrNull()
-                    ?: return@WsManager null
                 val settings = configManager.settings.first()
-                ServerDiscovery.resolveReachableWsUrl(gateway, settings.authToken, settings.nodeSn)
+                ServerDiscovery.resolvePairedGatewayWsUrl(
+                    appCtx,
+                    pairedGatewayId,
+                    settings.authToken,
+                    settings.nodeSn,
+                ) ?: run {
+                    val gateways = ServerDiscovery.findGateways(appCtx)
+                    val gateway = ServerDiscovery.matchPaired(gateways, pairedGatewayId)
+                        ?: gateways.firstOrNull()
+                        ?: return@WsManager null
+                    ServerDiscovery.resolveReachableWsUrl(gateway, settings.authToken, settings.nodeSn)
+                }
             },
             onPairConfig = { wsUrl, authToken, gatewayId ->
                 configManager.savePairing(wsUrl, authToken, gatewayId)
@@ -96,6 +105,14 @@ object NodeRuntime {
         }
 
         wsManager = ws
+
+        s.launch {
+            val initial = configManager.settings.first()
+            if (GatewayAddress.isFixedIpWsUrl(initial.wsUrl)) {
+                configManager.saveDiscoveredUrl(NodeSettings.AUTO_DISCOVERY_URL)
+                ClawLog.bp(TAG, "migrate_fixed_ip", "saved IP → ${NodeSettings.AUTO_DISCOVERY_URL}")
+            }
+        }
 
         // 指令分发：无障碍在线时交给其 dispatcher；否则回明确失败，但连接/心跳不受影响。
         ws.incomingCommands

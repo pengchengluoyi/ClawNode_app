@@ -52,22 +52,32 @@ object GatewayAddress {
         }.getOrDefault(false)
     }
 
+    /** ws_url 是否指向 RFC1918 固定 IP（应通过 mDNS 刷新，不持久依赖）。 */
+    fun isFixedIpWsUrl(wsUrl: String): Boolean {
+        val host = extractHostFromWsUrl(wsUrl) ?: return false
+        return isPrivateLanIp(host)
+    }
+
+    fun isMdnsHost(host: String): Boolean =
+        host.contains(".local", ignoreCase = true)
+
     /**
-     * 从 mDNS resolve 结果挑选更可能可达的连接 host。
-     * overlay IP 时回退到 lanHost（私网 IP 或 .local 名称）。
+     * 从 mDNS resolve 结果挑选连接 host。
+     * 优先 .local 名称（DHCP 换 IP 后仍可解析）；固定私网 IP 仅作最后兜底。
      */
     fun pickConnectHost(resolvedIp: String?, lanHost: String?, resolvedName: String?): String? {
-        if (!resolvedIp.isNullOrBlank() && isPrivateLanIp(resolvedIp)) return resolvedIp
+        listOfNotNull(lanHost, resolvedName, resolvedIp)
+            .firstOrNull { isMdnsHost(it) }
+            ?.takeIf { it.isNotBlank() }
+            ?.let { return it }
+
         if (!resolvedIp.isNullOrBlank() && !isOverlayOrCgnatIp(resolvedIp)) return resolvedIp
 
-        if (!lanHost.isNullOrBlank()) {
-            if (isPrivateLanIp(lanHost)) return lanHost
-            if (lanHost.contains(".local", ignoreCase = true)) return lanHost
-        }
+        if (!lanHost.isNullOrBlank() && isPrivateLanIp(lanHost)) return lanHost
 
-        return resolvedIp?.takeIf { it.isNotBlank() }
-            ?: lanHost?.takeIf { it.isNotBlank() }
+        return lanHost?.takeIf { it.isNotBlank() }
             ?: resolvedName?.takeIf { it.isNotBlank() }
+            ?: resolvedIp?.takeIf { it.isNotBlank() }
     }
 
     /** 若 ws_url 指向 overlay，而 remote 是同一局域网的私网 IP，则改用 remote。 */
@@ -79,27 +89,24 @@ object GatewayAddress {
     }
 
     fun buildCandidateWsUrls(gateway: ServerDiscovery.Gateway): List<String> {
+        val mdnsHosts = linkedSetOf<String>()
+        val otherHosts = linkedSetOf<String>()
+
+        fun addHost(raw: String?) {
+            val host = raw?.trim().orEmpty()
+            if (host.isBlank()) return
+            if (isMdnsHost(host)) mdnsHosts.add(host) else otherHosts.add(host)
+        }
+
+        addHost(gateway.lanHost)
+        addHost(gateway.host)
+        addHost(extractHostFromWsUrl(gateway.wsUrl))
+
         val ordered = linkedSetOf<String>()
+        mdnsHosts.forEach { ordered.add(ServerDiscovery.buildWsUrl(it, gateway.port, gateway.path)) }
+        otherHosts.forEach { ordered.add(ServerDiscovery.buildWsUrl(it, gateway.port, gateway.path)) }
         ordered.add(gateway.wsUrl)
-
-        val lanHost = gateway.lanHost?.trim().orEmpty()
-        if (lanHost.isNotBlank() && lanHost != gateway.host) {
-            ordered.add(ServerDiscovery.buildWsUrl(lanHost, gateway.port, gateway.path))
-        }
-
-        val host = gateway.host.trim()
-        if (host.isNotBlank()) {
-            val hostUrl = ServerDiscovery.buildWsUrl(host, gateway.port, gateway.path)
-            ordered.add(hostUrl)
-            if (isOverlayOrCgnatIp(host) && !lanHost.isNullOrBlank()) {
-                // overlay 主地址时，把 lanHost 候选提前
-                val lanUrl = ServerDiscovery.buildWsUrl(lanHost, gateway.port, gateway.path)
-                return listOf(lanUrl, hostUrl, gateway.wsUrl)
-                    .distinct()
-                    .filter { it.isNotBlank() }
-            }
-        }
-        return ordered.filter { it.isNotBlank() }
+        return ordered.filter { it.isNotBlank() }.distinct()
     }
 
     private val WS_HOST_REGEX = Regex("^(wss?://)([^:/]+)")
